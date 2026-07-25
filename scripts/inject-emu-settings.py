@@ -56,6 +56,7 @@ def main():
                     "server": "europe",
                     "unit": "mmol",
                     "reversed": False,
+                    "quickView": False,
                     "lowThreshold": 70,
                     "highThreshold": 180,
                     "vibeLowSoonEnabled": False,

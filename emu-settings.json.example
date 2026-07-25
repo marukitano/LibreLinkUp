@@ -1,9 +1,10 @@
 {
-	"accountName": "your-dexcom-username",
-	"password": "your-dexcom-password",
-	"server": "us",
-	"unit": "mgdl",
+	"accountName": "your-librelinkup-email",
+	"password": "your-librelinkup-password",
+	"server": "europe",
+	"unit": "mmol",
 	"reversed": false,
+	"quickView": false,
 	"lowThreshold": 70,
 	"highThreshold": 180,
 	"vibeLowSoonEnabled": false,
@@ -13,5 +14,8 @@
 	"vibeHighThreshold": 250,
 	"vibeDelayMinutes": 60,
 	"vibeRepeatMinutes": 60,
-	"saltieApiToken": "your-saltie-api-token"
+	"goodColor": "0x00AA55",
+	"warningColor": "0xFFAA00",
+	"alarmColor": "0xFF0000",
+	"pollIntervalMinutes": 5
 }
