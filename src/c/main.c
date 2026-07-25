@@ -44,7 +44,7 @@
 // Chart configuration
 #define CHART_MAX_POINTS  26  // 130 minutes / 5 minutes = 26 points
 #define CHART_DOT_RADIUS  4
-#define CHART_DISPLAY_HOURS 4  // 4h view: one vertical grid line per hour
+#define CHART_DISPLAY_HOURS 5  // four previous full hours plus the current hour
 #define CHART_LEFT_GUTTER 32   // room for min/max in the same font as hour labels
 #define CHART_EDGE_MARGIN 4
 
@@ -903,7 +903,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
 
     int margin = CHART_EDGE_MARGIN;
     int chart_height = bounds.size.h - (margin * 2);
-    int chart_left = bounds.origin.x + CHART_LEFT_GUTTER + margin;
+    int chart_left = bounds.origin.x + margin;
     int chart_right = bounds.origin.x + bounds.size.w - margin;
     int label_x = bounds.origin.x + 1;
 
@@ -940,22 +940,24 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     struct tm *tick_time = localtime(&now);
     int current_minute = tick_time->tm_min;
     int chart_width = chart_right - chart_left;
+    int chart_window_minutes =
+        ((CHART_DISPLAY_HOURS - 1) * 60) + current_minute;
 
-    // Rolling full-hour grid. At 14:37, for example, the 14:00 marker sits
-    // 37 minutes left of the right edge, then 13:00, 12:00 and 11:00 follow.
+    // Show the four previous full hours from the left edge through the
+    // current time at the right edge. At 20:02 this is 16:00 to 20:02.
     for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
         int minutes_ago = current_minute + (i * 60);
 
         if (
-            minutes_ago <= 0 ||
-            minutes_ago >= (CHART_DISPLAY_HOURS * 60)
+            minutes_ago < 0 ||
+            minutes_ago > chart_window_minutes
         ) {
             continue;
         }
 
         int x = chart_right -
                 (minutes_ago * chart_width) /
-                (CHART_DISPLAY_HOURS * 60);
+                chart_window_minutes;
 
         graphics_draw_line(
             ctx,
@@ -1166,6 +1168,21 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     int max_label_line_x = max_label_rect.origin.x + max_label_size.w + 1;
     int min_label_line_x = min_label_rect.origin.x + min_label_size.w + 1;
 
+    // Protect only the actually occupied text area. Chart points may still
+    // reach the left display edge wherever they do not overlap the labels.
+    GRect max_text_rect = GRect(
+        max_label_rect.origin.x,
+        max_label_rect.origin.y,
+        max_label_size.w,
+        max_label_rect.size.h
+    );
+    GRect min_text_rect = GRect(
+        min_label_rect.origin.x,
+        min_label_rect.origin.y,
+        min_label_size.w,
+        min_label_rect.size.h
+    );
+
     if (have_max_point) {
         int end_x = max_point_x - CHART_DOT_RADIUS;
         if (end_x > max_label_line_x) {
@@ -1216,6 +1233,31 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         int y = bounds.origin.y + margin + chart_height -
                 ((clamped_value - plot_min) * chart_height /
                  (plot_max - plot_min));
+
+        const int dot_radius = CHART_DOT_RADIUS - 1;
+        GRect dot_rect = GRect(
+            x - dot_radius,
+            y - dot_radius,
+            (dot_radius * 2) + 1,
+            (dot_radius * 2) + 1
+        );
+
+        bool overlaps_max_label =
+            dot_rect.origin.x < max_text_rect.origin.x + max_text_rect.size.w &&
+            dot_rect.origin.x + dot_rect.size.w > max_text_rect.origin.x &&
+            dot_rect.origin.y < max_text_rect.origin.y + max_text_rect.size.h &&
+            dot_rect.origin.y + dot_rect.size.h > max_text_rect.origin.y;
+
+        bool overlaps_min_label =
+            show_min_label &&
+            dot_rect.origin.x < min_text_rect.origin.x + min_text_rect.size.w &&
+            dot_rect.origin.x + dot_rect.size.w > min_text_rect.origin.x &&
+            dot_rect.origin.y < min_text_rect.origin.y + min_text_rect.size.h &&
+            dot_rect.origin.y + dot_rect.size.h > min_text_rect.origin.y;
+
+        if (overlaps_max_label || overlaps_min_label) {
+            continue;
+        }
 
 #ifdef PBL_COLOR
         graphics_context_set_fill_color(
@@ -1368,14 +1410,15 @@ static void update_chart_hour_labels(void) {
 
     int current_hour = tick_time->tm_hour;
     int current_minute = tick_time->tm_min;
-    int chart_left = CHART_LEFT_GUTTER + CHART_EDGE_MARGIN;
+    int chart_left = CHART_EDGE_MARGIN;
     int chart_right = SCREEN_WIDTH - CHART_EDGE_MARGIN;
     int chart_width = chart_right - chart_left;
     int label_width = 30;
+    int chart_window_minutes =
+        ((CHART_DISPLAY_HOURS - 1) * 60) + current_minute;
 
-    // In a rolling 4-hour window, the newest full-hour marker is
-    // current_minute minutes behind the right edge. Older markers follow
-    // at exact one-hour intervals and therefore move smoothly left.
+    // The oldest full hour sits at the left edge and the current time at
+    // the right edge. The five labels therefore remain visible together.
     int newest_hour_offset_minutes = current_minute;
 
     for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
@@ -1383,8 +1426,8 @@ static void update_chart_hour_labels(void) {
             newest_hour_offset_minutes + (i * 60);
 
         bool visible =
-            minutes_ago > 0 &&
-            minutes_ago < (CHART_DISPLAY_HOURS * 60);
+            minutes_ago >= 0 &&
+            minutes_ago <= chart_window_minutes;
 
         layer_set_hidden(
             text_layer_get_layer(s_hour_label_layers[i]),
@@ -1418,12 +1461,18 @@ static void update_chart_hour_labels(void) {
 
         int x = chart_right -
                 (minutes_ago * chart_width) /
-                (CHART_DISPLAY_HOURS * 60);
+                chart_window_minutes;
+
+        // Keep the label centered under its grid line, even when part of the
+        // label lies outside the display. Pebble clips it naturally, so the
+        // oldest hour disappears gradually on the left and the newest hour
+        // appears gradually on the right.
+        int label_x = x - (label_width / 2);
 
         layer_set_frame(
             text_layer_get_layer(s_hour_label_layers[i]),
             GRect(
-                x - (label_width / 2),
+                label_x,
                 BOTTOM_ROW_Y,
                 label_width,
                 24
@@ -1930,6 +1979,7 @@ static void main_window_load(Window *window) {
     // Sync spinner layer - bottom, to the right of date
     s_sync_layer = layer_create(GRect(110, 206, 16, 16));
     layer_set_update_proc(s_sync_layer, sync_layer_update_proc);
+    layer_set_hidden(s_sync_layer, true);  // Sync continues, visual spinner disabled
     layer_add_child(window_layer, s_sync_layer);
 
     // Alert triangle layer - same position as sync layer (mutually exclusive visibility)
