@@ -1212,8 +1212,8 @@ function scheduleNextPoll() {
 		pollTimer = null;
 	}
 
-	console.log("Next poll in 150s");
-	pollTimer = setTimeout(fetchData, 150 * 1000);
+	console.log("Next poll in 300s");
+	pollTimer = setTimeout(fetchData, 300 * 1000);
 }
 
 /**
