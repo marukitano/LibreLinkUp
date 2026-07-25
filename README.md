@@ -1,5 +1,7 @@
 # OpenLibreLinkUp
 
+![](./OpenLibreLinkUp.png)                  ![](OpenLibreLinkUp2.png)
+
 > [Deutsche Version](#deutsche-version)
 
 A complete glucose-monitoring watchface for the **Pebble Time 2**.  
