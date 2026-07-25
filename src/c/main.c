@@ -2,7 +2,7 @@
  * T1000 CGM Watchface
  *
  * A Pebble watchface for displaying Dexcom CGM data.
- * Displays: Time, Date, CGM value, trend arrow, delta, and 120-minute chart.
+ * Displays: Time, CGM value, trend arrow, delta, age, and CGM chart.
  */
 
 #include <pebble.h>
@@ -70,7 +70,6 @@ static Layer *s_battery_layer;
 static Layer *s_sync_layer;
 static Layer *s_alert_layer;
 static TextLayer *s_time_layer;
-static TextLayer *s_date_layer;
 static TextLayer *s_cgm_value_layer;
 static TextLayer *s_delta_layer;
 static TextLayer *s_time_ago_layer;
@@ -111,10 +110,9 @@ static const uint32_t TREND_ICONS_BLACK[] = {
 
 // Text buffers
 static char s_time_buffer[12];
-static char s_date_buffer[12];
 static char s_cgm_value_buffer[8];
 static char s_delta_buffer[12];
-static char s_time_ago_buffer[16];
+static char s_time_ago_buffer[24];
 
 // Chart data
 static int16_t s_chart_values[CHART_MAX_POINTS];
@@ -197,7 +195,6 @@ static void apply_colors() {
 
     // Update text layer colors
     text_layer_set_text_color(s_time_layer, fg_color);
-    text_layer_set_text_color(s_date_layer, fg_color);
     text_layer_set_text_color(s_cgm_value_layer, fg_color);
     text_layer_set_text_color(s_delta_layer, fg_color);
     text_layer_set_text_color(s_time_ago_layer, fg_color);
@@ -904,11 +901,15 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
             if (hr_value < HR_Y_MIN) hr_value = HR_Y_MIN;
             if (hr_value > HR_Y_MAX) hr_value = HR_Y_MAX;
 
-            // HR data is already at 5-min intervals (0, 5, 10, ...)
-            // Use the same X calculation as CGM dots for consistent alignment
-            int total_minutes_ago = s_hr_minutes_ago[i] + elapsed_minutes;
-            int pixel_offset = (total_minutes_ago * CHART_DOT_SPACING) / 5;
-            int x = bounds.origin.x + bounds.size.w - margin - 2 - pixel_offset;
+            // Draw heart-rate points with the same even spacing as CGM points.
+            // Oldest point stays at the left, newest at the right.
+            int x;
+            if (s_hr_count <= 1) {
+                x = chart_right;
+            } else {
+                int display_index = s_hr_count - 1 - i;
+                x = chart_left + (display_index * (chart_right - chart_left)) / (s_hr_count - 1);
+            }
 
             // Calculate Y position using HR scale (separate from CGM scale)
             int y = bounds.origin.y + margin + chart_height -
@@ -929,8 +930,8 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     }
 
     // Draw dots for each data point
-    // Data comes in most-recent-first, so we plot right-to-left
-    // X position is based on actual timestamp, not array index
+    // Data comes in most-recent-first, so we still plot newest on the right.
+    // Unlike before, points are spaced evenly to avoid large visual gaps.
 
     for (int i = 0; i < s_chart_count; i++) {
         int value = s_chart_values[i];
@@ -940,12 +941,16 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         if (value < CHART_Y_MIN) value = CHART_Y_MIN;
         if (value > CHART_Y_MAX) value = CHART_Y_MAX;
 
-        // Calculate X position based on actual minutes ago (plus elapsed time)
-        // Right edge = 0 minutes ago, left edge = 120 minutes ago
-        // pixels_per_minute = CHART_DOT_SPACING / 5
+        // Calculate X position using equal spacing.
+        // Oldest reading is on the left, newest on the right.
         int total_minutes_ago = s_chart_minutes_ago[i] + elapsed_minutes;
-        int pixel_offset = (total_minutes_ago * CHART_DOT_SPACING) / 5;
-        int x = bounds.origin.x + bounds.size.w - margin - 2 - pixel_offset;
+        int x;
+        if (s_chart_count <= 1) {
+            x = chart_right;
+        } else {
+            int display_index = s_chart_count - 1 - i;
+            x = chart_left + (display_index * (chart_right - chart_left)) / (s_chart_count - 1);
+        }
 
         // Calculate Y position (invert because screen Y increases downward)
         int y = bounds.origin.y + margin + chart_height -
@@ -1002,7 +1007,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         }
 
         // Format carbs as string
-        char carbs_text[4];
+        char carbs_text[8];
         snprintf(carbs_text, sizeof(carbs_text), "%d", carbs);
 
         // Calculate text size
@@ -1307,9 +1312,6 @@ static void update_time() {
     snprintf(s_time_buffer, sizeof(s_time_buffer), "%s", time_ptr);
     text_layer_set_text(s_time_layer, s_time_buffer);
 
-    // Format and set date (day of week + month + day number)
-    strftime(s_date_buffer, sizeof(s_date_buffer), "%a %b %e", tick_time);
-    text_layer_set_text(s_date_layer, s_date_buffer);
 }
 
 /**
@@ -1380,9 +1382,17 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         text_layer_set_text(s_delta_layer, s_delta_buffer);
     }
 
-    // Read CGM value and update layout (uses delta width for centering)
+    // Read CGM value and update layout (uses delta width for centering).
+    // An empty value means the phone reported an error/no new measurement.
+    // In that case, keep the last displayed value and let its age continue increasing.
     Tuple *cgm_value_tuple = dict_find(iterator, KEY_CGM_VALUE);
-    if (cgm_value_tuple) {
+    // Pebble stores strings in a flexible array member. Checking the tuple
+    // length avoids compiler warnings from testing the cstring address directly.
+    bool has_cgm_value =
+        cgm_value_tuple &&
+        cgm_value_tuple->length > 1;
+
+    if (has_cgm_value) {
         snprintf(s_cgm_value_buffer, sizeof(s_cgm_value_buffer), "%s", cgm_value_tuple->value->cstring);
         text_layer_set_text(s_cgm_value_layer, s_cgm_value_buffer);
         update_layout_for_cgm_text(s_cgm_value_buffer);
@@ -1394,11 +1404,16 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         update_trend_icon(trend_tuple->value->uint8);
     }
 
-    // Read time ago
+    // Read time ago only together with a real CGM value.
+    // Error messages contain a placeholder age of 0; accepting that would make
+    // an old reading look fresh again.
     Tuple *time_ago_tuple = dict_find(iterator, KEY_CGM_TIME_AGO);
-    if (time_ago_tuple) {
+    if (time_ago_tuple && has_cgm_value) {
         s_last_minutes_ago = time_ago_tuple->value->int32;
         s_last_data_time = time(NULL);
+        update_time_ago_display();
+    } else {
+        // Keep aging the last successfully received measurement.
         update_time_ago_display();
     }
 
@@ -1548,7 +1563,7 @@ static void main_window_load(Window *window) {
     window_set_background_color(window, GColorBlack);
 
     // Layout (top to bottom):
-    // - Time + Date (single row, medium font) - height ~28
+    // - Time (single row, medium font) - height ~28
     // - CGM value (large) + trend arrow + delta - height ~50
     // - Time ago - height ~20
     // - Chart - remaining space
@@ -1629,14 +1644,6 @@ static void main_window_load(Window *window) {
     text_layer_set_text(s_time_ago_layer, "---");
     layer_add_child(window_layer, text_layer_get_layer(s_time_ago_layer));
 
-    // Date layer - bottom left corner
-    s_date_layer = create_text_layer(
-        GRect(8, BOTTOM_ROW_Y, 100, 28),
-        fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
-        GTextAlignmentLeft
-    );
-    layer_add_child(window_layer, text_layer_get_layer(s_date_layer));
-
     // Sync spinner layer - bottom, to the right of date
     s_sync_layer = layer_create(GRect(110, 206, 16, 16));
     layer_set_update_proc(s_sync_layer, sync_layer_update_proc);
@@ -1697,7 +1704,6 @@ static void main_window_unload(Window *window) {
     }
 
     text_layer_destroy(s_time_layer);
-    text_layer_destroy(s_date_layer);
     text_layer_destroy(s_cgm_value_layer);
     text_layer_destroy(s_delta_layer);
     text_layer_destroy(s_time_ago_layer);

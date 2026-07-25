@@ -1,8 +1,8 @@
 /**
  * T1000 CGM Watchface - PebbleKit JS
  *
- * Handles Dexcom Share authentication, data fetching, and smart polling.
- * Polls at 5 minutes + 45 seconds after last good reading to minimize battery usage.
+ * Handles LibreLinkUp authentication, data fetching, and smart polling.
+ * Keeps the original watch-side message format so the existing UI remains unchanged.
  */
 
 // Import Clay for configuration
@@ -25,16 +25,20 @@ var KEY_REVERSED = 10;
 var KEY_SYNC_ERROR = 11;
 var KEY_MEAL_DATA = 12;
 
-// Dexcom Share API endpoints
-var DEXCOM_URLS = {
-	us: "https://share1.dexcom.com",
-	international: "https://shareous1.dexcom.com"
+// LibreLinkUp API endpoints
+var LIBRE_URLS = {
+	europe: "https://api-eu.libreview.io",
+	germany: "https://api-de.libreview.io",
+	france: "https://api-fr.libreview.io",
+	us: "https://api-us.libreview.io",
+	global: "https://api.libreview.io"
 };
 
-// Dexcom application ID (same as official Dexcom app uses)
-var DEXCOM_APP_ID = "d89443d2-327c-4a6f-89e5-496bbb0317db";
+// LibreLinkUp client identity. Abbott may require updates when the official app changes.
+var LIBRE_PRODUCT = "llu.ios";
+var LIBRE_VERSION = "4.16.0";
 
-// Trend direction mapping (Dexcom values)
+// Internal trend direction mapping used by the Pebble watch
 var TREND_DIRECTIONS = {
 	None: 0,
 	DoubleUp: 1,
@@ -49,13 +53,15 @@ var TREND_DIRECTIONS = {
 };
 
 // State
-var sessionId = null;
+var authToken = null;
+var accountId = null;
+var patientId = null;
 var lastGoodReadingTime = null;
 var pollTimer = null;
 var settings = {
 	accountName: "",
 	password: "",
-	server: "us",
+	server: "europe",
 	unit: "mgdl",
 	reversed: false,
 	highThreshold: 180,
@@ -144,7 +150,7 @@ function getCachedReadings() {
 		}
 
 		// Check if the latest reading's timestamp is less than 5 minutes old
-		var latestTimestamp = parseDexcomTimestamp(cache.readings[0].WT);
+		var latestTimestamp = parseReadingTimestamp(cache.readings[0].WT);
 		if (!latestTimestamp) {
 			return null;
 		}
@@ -178,7 +184,7 @@ var pendingAlert = ALERT_NONE;
 function loadSettings() {
 	console.log("loadSettings() called");
 	var stored = localStorage.getItem("clay-settings");
-	console.log("localStorage clay-settings raw: " + stored);
+	console.log("Stored Clay settings found: " + (stored ? "yes" : "no"));
 	if (stored) {
 		try {
 			var parsed = JSON.parse(stored);
@@ -205,10 +211,26 @@ function saveSettings() {
 }
 
 /**
- * Get the Dexcom Share base URL based on settings
+ * Get the currently active LibreLinkUp API base URL.
+ * Authentication always starts on the global server, which may redirect
+ * the account to its correct regional server.
  */
-function getDexcomBaseUrl() {
-	return DEXCOM_URLS[settings.server] || DEXCOM_URLS.us;
+function getLibreBaseUrl() {
+	return LIBRE_URLS[settings.server] || LIBRE_URLS.europe;
+}
+
+/**
+ * Convert a LibreLinkUp region code to its API server.
+ */
+function getLibreRegionalUrl(region) {
+	if (!region) {
+		return null;
+	}
+
+	var code = String(region).toLowerCase();
+
+	// LibreLinkUp currently uses hosts such as api-eu, api-de and api-us.
+	return "https://api-" + code + ".libreview.io";
 }
 
 /**
@@ -259,9 +281,12 @@ function httpRequest(method, url, body, headers) {
 		xhr.open(method, url, true);
 
 		// Set headers
-		xhr.setRequestHeader("Content-Type", "application/json");
+		xhr.setRequestHeader("Content-Type", "application/json;charset=UTF-8");
 		xhr.setRequestHeader("Accept", "application/json");
-		xhr.setRequestHeader("User-Agent", "Dexcom Share/3.0.2.11 CFNetwork/711.2.23 Darwin/14.0.0");
+		xhr.setRequestHeader(
+			"User-Agent",
+			"Mozilla/5.0 (iPhone; CPU OS 17_4_1 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Version/17.4.1 Mobile/10A5355d Safari/8536.25"
+		);
 
 		if (headers) {
 			for (var key in headers) {
@@ -301,55 +326,454 @@ function httpRequest(method, url, body, headers) {
 	});
 }
 
+
 /**
- * Authenticate with Dexcom Share
+ * SHA-256 for LibreLinkUp's account-id header.
+ * Returns a lowercase hexadecimal digest.
  */
-function dexcomLogin() {
-	var baseUrl = getDexcomBaseUrl();
-	var url = baseUrl + "/ShareWebServices/Services/General/LoginPublisherAccountByName";
+function sha256Ascii(value) {
+	function rightRotate(number, amount) {
+		return (number >>> amount) | (number << (32 - amount));
+	}
 
-	console.log("Logging in to Dexcom Share...");
+	var mathPow = Math.pow;
+	var maxWord = mathPow(2, 32);
+	var lengthProperty = "length";
+	var i;
+	var j;
+	var result = "";
+	var words = [];
+	var asciiBitLength = value[lengthProperty] * 8;
+	var hash = sha256Ascii.h = sha256Ascii.h || [];
+	var k = sha256Ascii.k = sha256Ascii.k || [];
+	var primeCounter = k[lengthProperty];
+	var isComposite = {};
 
-	return httpRequest("POST", url, {
-		accountName: settings.accountName,
-		password: settings.password,
-		applicationId: DEXCOM_APP_ID
-	}).then(function (response) {
-		sessionId = response;
-		console.log("Login successful, session: " + sessionId.substring(0, 8) + "...");
-		return sessionId;
+	for (var candidate = 2; primeCounter < 64; candidate++) {
+		if (!isComposite[candidate]) {
+			for (i = 0; i < 313; i += candidate) {
+				isComposite[i] = candidate;
+			}
+			hash[primeCounter] = (mathPow(candidate, 0.5) * maxWord) | 0;
+			k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
+		}
+	}
+
+	value += "\x80";
+	while (value[lengthProperty] % 64 - 56) {
+		value += "\x00";
+	}
+
+	for (i = 0; i < value[lengthProperty]; i++) {
+		j = value.charCodeAt(i);
+		if (j >> 8) {
+			throw new Error("sha256Ascii only supports ASCII input");
+		}
+		words[i >> 2] |= j << (((3 - i) % 4) * 8);
+	}
+
+	words[words[lengthProperty]] = (asciiBitLength / maxWord) | 0;
+	words[words[lengthProperty]] = asciiBitLength;
+
+	for (j = 0; j < words[lengthProperty];) {
+		var w = words.slice(j, j += 16);
+		var oldHash = hash.slice(0);
+		hash = hash.slice(0, 8);
+
+		for (i = 0; i < 64; i++) {
+			var w15 = w[i - 15];
+			var w2 = w[i - 2];
+			var a = hash[0];
+			var e = hash[4];
+			var temp1 =
+				hash[7] +
+				(rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) +
+				((e & hash[5]) ^ (~e & hash[6])) +
+				k[i] +
+				(w[i] =
+					i < 16
+						? w[i]
+						: (
+							w[i - 16] +
+							(rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3)) +
+							w[i - 7] +
+							(rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))
+						) | 0);
+			var temp2 =
+				(rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) +
+				((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+
+			hash = [(temp1 + temp2) | 0].concat(hash);
+			hash[4] = (hash[4] + temp1) | 0;
+			hash.pop();
+		}
+
+		for (i = 0; i < 8; i++) {
+			hash[i] = (hash[i] + oldHash[i]) | 0;
+		}
+	}
+
+	for (i = 0; i < 8; i++) {
+		for (j = 3; j + 1; j--) {
+			var byte = (hash[i] >> (j * 8)) & 255;
+			result += (byte < 16 ? "0" : "") + byte.toString(16);
+		}
+	}
+
+	return result;
+}
+
+/**
+ * Common LibreLinkUp request headers
+ */
+function getLibreHeaders(includeAuth) {
+	var headers = {
+		product: LIBRE_PRODUCT,
+		version: LIBRE_VERSION,
+		"account-id": accountId || ""
+	};
+
+	if (includeAuth && authToken) {
+		headers.authorization = "Bearer " + authToken;
+	}
+
+	return headers;
+}
+
+/**
+ * Authenticate with LibreLinkUp.
+ *
+ * Login starts on api.libreview.io. If LibreLinkUp returns a region
+ * redirect, the login is repeated once on the correct regional server.
+ */
+function libreLogin(redirectHandled) {
+	var url = getLibreBaseUrl() + "/llu/auth/login";
+
+	console.log("Logging in to LibreLinkUp at " + getLibreBaseUrl() + "...");
+
+	return httpRequest(
+		"POST",
+		url,
+		{
+			email: settings.accountName,
+			password: settings.password
+		},
+		getLibreHeaders(false)
+	).then(function (response) {
+		console.log(
+			"LibreLinkUp login response: status=" +
+				(response && response.status !== undefined ? response.status : "missing") +
+				", hasAuthTicket=" +
+				!!(response && response.data && response.data.authTicket)
+		);
+
+		if (
+			response &&
+			response.status === 0 &&
+			response.data &&
+			response.data.redirect &&
+			response.data.region
+		) {
+			if (redirectHandled) {
+				throw new Error("LibreLinkUp returned repeated region redirect");
+			}
+
+			var regionalUrl = getLibreRegionalUrl(response.data.region);
+			if (!regionalUrl) {
+				throw new Error(
+					"Unknown LibreLinkUp region: " + response.data.region
+				);
+			}
+
+			console.log(
+				"LibreLinkUp redirected account to region " +
+					response.data.region +
+					" (" +
+					regionalUrl +
+					")"
+			);
+
+			var regionCode = String(response.data.region).toLowerCase();
+			if (LIBRE_URLS[regionCode]) {
+				settings.server = regionCode;
+				saveSettings();
+				return libreLogin(true);
+			}
+
+			throw new Error(
+				"Unsupported LibreLinkUp region: " + response.data.region
+			);
+		}
+
+		if (
+			!response ||
+			response.status !== 0 ||
+			!response.data ||
+			!response.data.authTicket
+		) {
+			var message =
+				response &&
+				response.error &&
+				response.error.message
+					? response.error.message
+					: "unknown error";
+
+			throw new Error(
+				"LibreLinkUp login rejected: " + message
+			);
+		}
+
+		authToken = response.data.authTicket.token;
+		accountId =
+			response.data.user && response.data.user.id
+				? sha256Ascii(response.data.user.id)
+				: null;
+		patientId = null;
+
+		if (!authToken) {
+			throw new Error(
+				"LibreLinkUp returned no authentication token"
+			);
+		}
+
+		if (!accountId) {
+			throw new Error(
+				"LibreLinkUp returned no account ID"
+			);
+		}
+
+		console.log(
+			"LibreLinkUp login successful at " + getLibreBaseUrl()
+		);
+		return authToken;
 	});
 }
 
 /**
- * Fetch glucose readings from Dexcom Share
+ * Get the LibreLinkUp connection and patient ID.
  */
-function dexcomFetchReadings() {
-	if (!sessionId) {
+function libreFetchConnections() {
+	if (!authToken) {
 		return Promise.reject(new Error("Not logged in"));
 	}
 
-	var baseUrl = getDexcomBaseUrl();
-	// Fetch 26 readings for 130 minutes of data (26 * 5 = 130)
-	var url =
-		baseUrl +
-		"/ShareWebServices/Services/Publisher/ReadPublisherLatestGlucoseValues" +
-		"?sessionID=" +
-		encodeURIComponent(sessionId) +
-		"&minutes=1440" +
-		"&maxCount=26";
+	var url = getLibreBaseUrl() + "/llu/connections";
 
-	console.log("Fetching glucose readings...");
+	return httpRequest("GET", url, null, getLibreHeaders(true)).then(function (response) {
+		if (!response || response.status !== 0 || !response.data || response.data.length === 0) {
+			throw new Error("No LibreLinkUp connection found");
+		}
 
-	return httpRequest("POST", url, null);
+		patientId = response.data[0].patientId;
+
+		if (!patientId) {
+			throw new Error("LibreLinkUp returned no patient ID");
+		}
+
+		return patientId;
+	});
 }
 
 /**
- * Parse Dexcom timestamp
+ * Convert LibreLinkUp's numeric trend arrow to the names expected by
+ * the existing watchface code.
+ */
+function mapLibreTrend(trendArrow) {
+	switch (Number(trendArrow)) {
+		case 1:
+			return "DoubleDown";
+		case 2:
+			return "SingleDown";
+		case 3:
+			return "Flat";
+		case 4:
+			return "SingleUp";
+		case 5:
+			return "DoubleUp";
+		default:
+			return "None";
+	}
+}
+
+/**
+ * Parse LibreLinkUp timestamps.
+ */
+function parseLibreTimestamp(value) {
+	if (!value) {
+		return null;
+	}
+
+	if (typeof value === "number") {
+		return value < 100000000000 ? value * 1000 : value;
+	}
+
+	var text = String(value);
+	var nativeTimestamp = Date.parse(text);
+	if (!isNaN(nativeTimestamp)) {
+		return nativeTimestamp;
+	}
+
+	var match = text.match(
+		/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?$/i
+	);
+	if (!match) {
+		return null;
+	}
+
+	var month = parseInt(match[1], 10) - 1;
+	var day = parseInt(match[2], 10);
+	var year = parseInt(match[3], 10);
+	var hour = parseInt(match[4], 10);
+	var minute = parseInt(match[5], 10);
+	var second = parseInt(match[6], 10);
+	var ampm = match[7] ? match[7].toUpperCase() : null;
+
+	if (ampm === "PM" && hour < 12) hour += 12;
+	if (ampm === "AM" && hour === 12) hour = 0;
+
+	return new Date(year, month, day, hour, minute, second).getTime();
+}
+
+
+/**
+ * LibreLinkUp FactoryTimestamp is UTC even when no timezone suffix is present.
+ */
+function parseLibreFactoryTimestamp(value) {
+	if (!value) {
+		return null;
+	}
+
+	if (typeof value === "number") {
+		return value < 100000000000 ? value * 1000 : value;
+	}
+
+	var text = String(value).trim();
+
+	// ISO timestamp without timezone: force UTC by appending Z.
+	if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?$/.test(text)) {
+		var isoTimestamp = Date.parse(text + "Z");
+		return isNaN(isoTimestamp) ? null : isoTimestamp;
+	}
+
+	// LibreLinkUp's common M/D/YYYY H:MM:SS [AM|PM] format, interpreted as UTC.
+	var match = text.match(
+		/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})\s*(AM|PM)?$/i
+	);
+	if (match) {
+		var month = parseInt(match[1], 10) - 1;
+		var day = parseInt(match[2], 10);
+		var year = parseInt(match[3], 10);
+		var hour = parseInt(match[4], 10);
+		var minute = parseInt(match[5], 10);
+		var second = parseInt(match[6], 10);
+		var ampm = match[7] ? match[7].toUpperCase() : null;
+
+		if (ampm === "PM" && hour < 12) hour += 12;
+		if (ampm === "AM" && hour === 12) hour = 0;
+
+		return Date.UTC(year, month, day, hour, minute, second);
+	}
+
+	// Already includes an explicit timezone.
+	var parsed = Date.parse(text);
+	return isNaN(parsed) ? null : parsed;
+}
+
+
+/**
+ * Normalize LibreLinkUp readings to the original internal Dexcom-like shape.
+ */
+function normalizeLibreReadings(graphResponse) {
+	if (!graphResponse || graphResponse.status !== 0 || !graphResponse.data) {
+		throw new Error("Invalid LibreLinkUp graph response");
+	}
+
+	var data = graphResponse.data;
+	var source = [];
+
+	if (data.graphData && data.graphData.length) {
+		source = source.concat(data.graphData);
+	}
+
+	var current =
+		data.connection &&
+		(data.connection.glucoseMeasurement || data.connection.glucoseItem);
+
+	if (current) {
+		source.push(current);
+	}
+
+	var seen = {};
+	var normalized = [];
+
+	source.forEach(function (reading) {
+		var value = Number(
+			reading.ValueInMgPerDl !== undefined ? reading.ValueInMgPerDl : reading.Value
+		);
+		var timestamp = reading.FactoryTimestamp
+			? parseLibreFactoryTimestamp(reading.FactoryTimestamp)
+			: parseLibreTimestamp(reading.Timestamp);
+
+		if (!isFinite(value) || !timestamp) {
+			return;
+		}
+
+		var key = timestamp + ":" + value;
+		if (seen[key]) {
+			return;
+		}
+		seen[key] = true;
+
+		normalized.push({
+			Value: Math.round(value),
+			WT: "/Date(" + timestamp + ")/",
+			Trend: mapLibreTrend(reading.TrendArrow)
+		});
+	});
+
+	normalized.sort(function (a, b) {
+		return parseReadingTimestamp(b.WT) - parseReadingTimestamp(a.WT);
+	});
+
+	return normalized.slice(0, 26);
+}
+
+/**
+ * Fetch and normalize glucose readings from LibreLinkUp.
+ */
+function libreFetchReadings() {
+	if (!authToken) {
+		return Promise.reject(new Error("Not logged in"));
+	}
+
+	var ensurePatient = patientId
+		? Promise.resolve(patientId)
+		: libreFetchConnections();
+
+	return ensurePatient
+		.then(function (id) {
+			var url =
+				getLibreBaseUrl() +
+				"/llu/connections/" +
+				encodeURIComponent(id) +
+				"/graph";
+
+			console.log("Fetching LibreLinkUp glucose readings...");
+			return httpRequest("GET", url, null, getLibreHeaders(true));
+		})
+		.then(normalizeLibreReadings);
+}
+
+/**
+ * Parse the normalized internal timestamp.
  * Format: "/Date(1234567890000)/"
  */
-function parseDexcomTimestamp(dtString) {
-	var match = dtString.match(/Date\((\d+)\)/);
+function parseReadingTimestamp(dtString) {
+	if (!dtString) {
+		return null;
+	}
+
+	var match = String(dtString).match(/Date\((\d+)\)/);
 	if (match) {
 		return parseInt(match[1], 10);
 	}
@@ -420,7 +844,7 @@ function processReadings(readings, fromCache) {
 	// Most recent reading
 	var latest = readings[0];
 	var latestValue = latest.Value;
-	var latestTimestamp = parseDexcomTimestamp(latest.WT);
+	var latestTimestamp = parseReadingTimestamp(latest.WT);
 	var latestTrendString = latest.Trend || "None";
 	var latestTrend = TREND_DIRECTIONS[latestTrendString] || 0;
 
@@ -437,7 +861,7 @@ function processReadings(readings, fromCache) {
 	var delta = 0;
 	if (readings.length > 1) {
 		var previousValue = readings[1].Value;
-		var previousTimestamp = parseDexcomTimestamp(readings[1].WT);
+		var previousTimestamp = parseReadingTimestamp(readings[1].WT);
 		var timeDiffMinutes = (latestTimestamp - previousTimestamp) / 60000;
 
 		// Normalize to 5-minute rate
@@ -450,7 +874,7 @@ function processReadings(readings, fromCache) {
 	// Format: "120:0,125:5,130:10" where second number is minutes ago from now
 	var history = readings
 		.map(function (r) {
-			var timestamp = parseDexcomTimestamp(r.WT);
+			var timestamp = parseReadingTimestamp(r.WT);
 			var minutesAgo = Math.round((now - timestamp) / 60000);
 			return r.Value + ":" + minutesAgo;
 		})
@@ -540,8 +964,8 @@ function calculateVelocity(readings) {
 		}
 		// Check gap between consecutive readings (except for the last one)
 		if (i < 4) {
-			var thisTime = parseDexcomTimestamp(readings[i].WT);
-			var nextTime = parseDexcomTimestamp(readings[i + 1].WT);
+			var thisTime = parseReadingTimestamp(readings[i].WT);
+			var nextTime = parseReadingTimestamp(readings[i + 1].WT);
 			if (!thisTime || !nextTime) {
 				return null;
 			}
@@ -720,23 +1144,18 @@ function fetchData() {
 		return;
 	}
 
-	// Check cache first - use cached data if latest reading is less than 5 minutes old
-	var cachedReadings = getCachedReadings();
-	if (cachedReadings) {
-		processReadings(cachedReadings, true);
-		return;
-	}
-
 	// If we have a session, try to fetch directly
-	if (sessionId) {
-		dexcomFetchReadings()
+	if (authToken) {
+		libreFetchReadings()
 			.then(processReadings)
 			.catch(function (error) {
 				console.log("Fetch failed, re-authenticating: " + error.message);
 				// Session might be expired, try re-auth
-				sessionId = null;
-				dexcomLogin()
-					.then(dexcomFetchReadings)
+				authToken = null;
+				accountId = null;
+				patientId = null;
+				libreLogin()
+					.then(libreFetchReadings)
 					.then(processReadings)
 					.catch(function (error) {
 						console.log("Re-auth failed: " + error.message);
@@ -745,8 +1164,8 @@ function fetchData() {
 			});
 	} else {
 		// Need to login first
-		dexcomLogin()
-			.then(dexcomFetchReadings)
+		libreLogin()
+			.then(libreFetchReadings)
 			.then(processReadings)
 			.catch(function (error) {
 				console.log("Login/fetch failed: " + error.message);
@@ -784,49 +1203,17 @@ function fetchSaltieData() {
 }
 
 /**
- * Schedule next poll based on smart timing
- * Poll at 5 minutes + 45 seconds after last good reading
+ * Schedule the next LibreLinkUp poll at a fixed interval.
+ * 150 seconds = 2 minutes 30 seconds.
  */
 function scheduleNextPoll() {
-	// Clear any existing timer
 	if (pollTimer) {
 		clearTimeout(pollTimer);
 		pollTimer = null;
 	}
 
-	if (!lastGoodReadingTime) {
-		// No good reading yet, poll every 30 seconds
-		pollTimer = setTimeout(fetchData, 30000);
-		console.log("No reading yet, polling in 30s");
-		return;
-	}
-
-	var now = Date.now();
-
-	// Expected next reading: 5 minutes after last reading
-	// We poll at 5 minutes + 30 seconds to give Dexcom time to process
-	var pollInterval = (5 * 60 + 30) * 1000; // 5m 30s in milliseconds
-	var nextPollTime = lastGoodReadingTime + pollInterval;
-
-	// If we've already passed the next poll time, calculate the one after
-	while (nextPollTime <= now) {
-		nextPollTime += pollInterval;
-	}
-
-	var delay = nextPollTime - now;
-
-	// Cap at 6 minutes max (in case of drift)
-	if (delay > 6 * 60 * 1000) {
-		delay = 6 * 60 * 1000;
-	}
-
-	// Minimum 10 seconds
-	if (delay < 10000) {
-		delay = 10000;
-	}
-
-	console.log("Next poll in " + Math.round(delay / 1000) + "s");
-	pollTimer = setTimeout(fetchData, delay);
+	console.log("Next poll in 150s");
+	pollTimer = setTimeout(fetchData, 150 * 1000);
 }
 
 /**
@@ -877,7 +1264,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	// Update local settings from Clay response
 	if (dict.accountName !== undefined) settings.accountName = dict.accountName.value || "";
 	if (dict.password !== undefined) settings.password = dict.password.value || "";
-	if (dict.server !== undefined) settings.server = dict.server.value || "us";
+	if (dict.server !== undefined) settings.server = dict.server.value || "europe";
 	if (dict.unit !== undefined) settings.unit = dict.unit.value || "mgdl";
 	if (dict.reversed !== undefined) settings.reversed = !!dict.reversed.value;
 	if (dict.highThreshold !== undefined) settings.highThreshold = parseInt(dict.highThreshold.value, 10) || 180;
@@ -898,7 +1285,9 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	saveSettings();
 
 	// Reset session on credential change
-	sessionId = null;
+	authToken = null;
+	accountId = null;
+	patientId = null;
 
 	// Fetch data with new settings
 	fetchData();
@@ -908,7 +1297,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
  * Handle ready event
  */
 Pebble.addEventListener("ready", function () {
-	console.log("T1000 PebbleKit JS ready");
+	console.log("LibreLinkUp PebbleKit JS ready");
 	loadSettings();
 	loadVibeState();
 	fetchData();

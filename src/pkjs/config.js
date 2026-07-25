@@ -1,21 +1,21 @@
 module.exports = [
 	{
 		type: "heading",
-		defaultValue: "T1000 CGM Settings"
+		defaultValue: "LibreLinkUp CGM Settings"
 	},
 	{
 		type: "section",
 		items: [
 			{
 				type: "heading",
-				defaultValue: "Dexcom Share Credentials"
+				defaultValue: "LibreLinkUp Credentials"
 			},
 			{
 				type: "input",
 				messageKey: "accountName",
-				label: "Username",
+				label: "Email",
 				attributes: {
-					placeholder: "Dexcom Share username",
+					placeholder: "LibreLinkUp email address",
 					autocapitalize: "off",
 					autocorrect: "off"
 				}
@@ -25,7 +25,7 @@ module.exports = [
 				messageKey: "password",
 				label: "Password",
 				attributes: {
-					placeholder: "Dexcom Share password",
+					placeholder: "LibreLinkUp password",
 					type: "password"
 				}
 			},
@@ -33,10 +33,13 @@ module.exports = [
 				type: "select",
 				messageKey: "server",
 				label: "Server Region",
-				defaultValue: "us",
+				defaultValue: "europe",
 				options: [
+					{ label: "Europe", value: "europe" },
+					{ label: "Germany / DACH", value: "germany" },
+					{ label: "France", value: "france" },
 					{ label: "United States", value: "us" },
-					{ label: "International (Outside US)", value: "international" }
+					{ label: "Global / fallback", value: "global" }
 				]
 			}
 		]
