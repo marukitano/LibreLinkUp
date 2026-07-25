@@ -1075,11 +1075,23 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         NULL
     );
 
-    // When min and max are identical there is only one actual extremum point,
-    // so drawing the value twice would overlap.
-    bool same_extrema = raw_min == raw_max;
+    // Keep both labels when their displayed values differ by at least
+    // 0.2 mmol/L (or roughly 4 mg/dL). With a smaller gap, only show max.
+    bool show_min_label = false;
 
-    if (!same_extrema) {
+    if (strchr(s_cgm_value_buffer, '.') != NULL) {
+        unsigned int min_mmol_tenths =
+            ((unsigned int)raw_min * 100000U + 90091U) / 180182U;
+        unsigned int max_mmol_tenths =
+            ((unsigned int)raw_max * 100000U + 90091U) / 180182U;
+
+        show_min_label =
+            max_mmol_tenths - min_mmol_tenths >= 2U;
+    } else {
+        show_min_label = raw_max - raw_min >= 4;
+    }
+
+    if (show_min_label) {
         graphics_draw_text(
             ctx,
             min_buffer,
@@ -1169,7 +1181,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         }
     }
 
-    if (have_min_point && !same_extrema) {
+    if (have_min_point && show_min_label) {
         int end_x = min_point_x - CHART_DOT_RADIUS;
         if (end_x > min_label_line_x) {
             for (int x = min_label_line_x; x < end_x; x += 4) {
