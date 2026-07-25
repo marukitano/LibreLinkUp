@@ -1,5 +1,5 @@
 /**
- * T1000 CGM Watchface
+ * OpenLibreLinkUp Watchface
  *
  * A Pebble watchface for displaying LibreLinkUp CGM data.
  * Displays: Time, CGM value, trend arrow, delta, age, and CGM chart.
@@ -48,7 +48,7 @@
 #define CHART_Y_MAX       300  // internal mg/dL (about 16.7 mmol/L)
 #define CHART_DOT_RADIUS  4
 #define CHART_DISPLAY_HOURS 4  // 4h view: one vertical grid line per hour
-#define CHART_LEFT_GUTTER 22   // small gutter for min/max labels on the left
+#define CHART_LEFT_GUTTER 32   // room for min/max in the same font as hour labels
 #define CHART_EDGE_MARGIN 4
 
 // Display layout constants for Pebble Time 2 (200x228)
@@ -66,12 +66,13 @@
 static Window *s_main_window;
 static Layer *s_chart_layer;
 static Layer *s_divider_layer;
-static Layer *s_battery_layer;
+static TextLayer *s_date_layer;
 static Layer *s_sync_layer;
 static Layer *s_alert_layer;
 static TextLayer *s_time_layer;
 static TextLayer *s_cgm_value_layer;
 static TextLayer *s_delta_layer;
+static Layer *s_delta_triangle_layer;
 static TextLayer *s_time_ago_layer;
 static TextLayer *s_hour_label_layers[CHART_DISPLAY_HOURS];
 static Layer *s_trend_layer;
@@ -80,12 +81,9 @@ static TextLayer *s_no_data_layer;
 static Layer *s_loading_layer;
 static AppTimer *s_loading_timer;
 
-// Battery state
-static int s_battery_level = 0;
-static bool s_battery_charging = false;
-
 // Text buffers
 static char s_time_buffer[12];
+static char s_date_buffer[32];
 static char s_cgm_value_buffer[8];
 static char s_delta_buffer[12];
 static char s_time_ago_buffer[24];
@@ -146,8 +144,10 @@ static void update_current_glucose_color(void);
 static void trend_layer_update_proc(Layer *layer, GContext *ctx);
 static void update_layout_for_cgm_text(const char *cgm_text);
 static void update_time_ago_display(void);
+static void update_date(void);
 static void update_chart_hour_labels(void);
 static void format_chart_axis_value(int mgdl, char *buffer, size_t size);
+static void delta_triangle_layer_update_proc(Layer *layer, GContext *ctx);
 static void loading_timer_callback(void *data);
 static void loading_timeout_callback(void *data);
 static void show_data_layers(void);
@@ -158,6 +158,8 @@ static void sync_stop_timer_callback(void *data);
 static void start_sync_spinner(void);
 static void stop_sync_spinner(void);
 static void update_alert_visibility(void);
+static void trigger_low_soon_alarm(void);
+static void trigger_high_alarm(void);
 
 /**
  * Apply colors based on reversed mode to all UI elements
@@ -171,7 +173,11 @@ static void apply_colors() {
 
     // Update text layer colors
     text_layer_set_text_color(s_time_layer, fg_color);
+    text_layer_set_text_color(s_date_layer, fg_color);
     text_layer_set_text_color(s_delta_layer, fg_color);
+    if (s_delta_triangle_layer) {
+        layer_mark_dirty(s_delta_triangle_layer);
+    }
     text_layer_set_text_color(s_time_ago_layer, fg_color);
     text_layer_set_text_color(s_setup_layer, fg_color);
     for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
@@ -195,10 +201,6 @@ static void apply_colors() {
         layer_mark_dirty(s_loading_layer);
     }
 
-    // Mark battery layer dirty to redraw with new colors
-    if (s_battery_layer) {
-        layer_mark_dirty(s_battery_layer);
-    }
 
     // Mark sync layer dirty to redraw with new colors
     if (s_sync_layer) {
@@ -246,69 +248,6 @@ static void loading_layer_update_proc(Layer *layer, GContext *ctx) {
 }
 
 /**
- * Draw the battery icon
- * Shows battery outline with fill level, and charging indicator if plugged in
- */
-static void battery_layer_update_proc(Layer *layer, GContext *ctx) {
-    GRect bounds = layer_get_bounds(layer);
-    GColor fg_color = s_reversed ? GColorBlack : GColorWhite;
-    GColor faded_fg_color = s_reversed ? GColorDarkGray : GColorLightGray;
-
-    // Battery icon dimensions
-    int battery_width = 20;
-    int battery_height = 10;
-    int tip_width = 2;
-    int tip_height = 4;
-    int x = (bounds.size.w - battery_width - tip_width) / 2;
-    int y = (bounds.size.h - battery_height) / 2;
-
-    // Draw battery outline (rounded corners)
-    graphics_context_set_stroke_color(ctx, faded_fg_color);
-    graphics_draw_round_rect(ctx, GRect(x, y, battery_width, battery_height), 1);
-
-    // Draw battery tip (positive terminal)
-    graphics_context_set_fill_color(ctx, faded_fg_color);
-    graphics_fill_rect(ctx, GRect(x + battery_width, y + (battery_height - tip_height) / 2, tip_width, tip_height), 0, GCornerNone);
-
-    // Calculate fill width based on battery level (with 1px padding inside)
-    int fill_padding = 2;
-    int max_fill_width = battery_width - (fill_padding * 2);
-    int fill_width = (s_battery_level * max_fill_width) / 100;
-
-    // Draw fill
-    if (fill_width > 0) {
-        graphics_context_set_fill_color(ctx, fg_color);
-        graphics_fill_rect(ctx, GRect(x + fill_padding, y + fill_padding, fill_width, battery_height - (fill_padding * 2)), 0, GCornerNone);
-    }
-
-    // Draw charging bolt if charging
-    if (s_battery_charging) {
-        // Simple lightning bolt in center of battery
-        int bolt_x = x + battery_width / 2;
-        int bolt_y = y + battery_height / 2;
-
-        // Draw bolt using lines (inverted color for visibility)
-        GColor bolt_color = s_reversed ? GColorWhite : GColorBlack;
-        graphics_context_set_stroke_color(ctx, bolt_color);
-        graphics_draw_line(ctx, GPoint(bolt_x + 1, y + 1), GPoint(bolt_x - 1, bolt_y));
-        graphics_draw_line(ctx, GPoint(bolt_x - 1, bolt_y), GPoint(bolt_x + 1, bolt_y));
-        graphics_draw_line(ctx, GPoint(bolt_x + 1, bolt_y), GPoint(bolt_x - 1, y + battery_height - 2));
-    }
-}
-
-/**
- * Battery state change handler
- */
-static void battery_handler(BatteryChargeState charge_state) {
-    s_battery_level = charge_state.charge_percent;
-    s_battery_charging = charge_state.is_charging;
-
-    if (s_battery_layer) {
-        layer_mark_dirty(s_battery_layer);
-    }
-}
-
-/**
  * Draw the sync spinner (small rotating arc)
  */
 static void sync_layer_update_proc(Layer *layer, GContext *ctx) {
@@ -338,6 +277,129 @@ static void sync_layer_update_proc(Layer *layer, GContext *ctx) {
         GOvalScaleModeFitCircle,
         DEG_TO_TRIGANGLE(start_angle),
         DEG_TO_TRIGANGLE(start_angle + 270));
+}
+
+/**
+ * Trigger the low-soon alarm.
+ * Pebble Time 2 uses its speaker; muted or speaker-less models fall back
+ * to the existing vibration pattern.
+ */
+static void trigger_low_soon_alarm(void) {
+#ifdef PBL_SPEAKER
+    if (!speaker_is_muted()) {
+        static const SpeakerNote notes[] = {
+            {
+                .midi_note = 79,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 170,
+                .velocity = 120,
+                .reserved = 0
+            },
+            {
+                .midi_note = 0,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 90,
+                .velocity = 0,
+                .reserved = 0
+            },
+            {
+                .midi_note = 76,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 170,
+                .velocity = 120,
+                .reserved = 0
+            },
+            {
+                .midi_note = 0,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 70,
+                .velocity = 0,
+                .reserved = 0
+            },
+            {
+                .midi_note = 72,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 260,
+                .velocity = 127,
+                .reserved = 0
+            }
+        };
+
+        speaker_play_notes(notes, ARRAY_LENGTH(notes), 90);
+        APP_LOG(APP_LOG_LEVEL_INFO, "Low soon acoustic alarm triggered");
+        return;
+    }
+#endif
+
+    static const uint32_t pattern[] = {
+        70, 300, 70, 200, 70, 120, 70, 80, 70
+    };
+    vibes_enqueue_custom_pattern((VibePattern) {
+        .durations = pattern,
+        .num_segments = ARRAY_LENGTH(pattern)
+    });
+    APP_LOG(APP_LOG_LEVEL_INFO, "Low soon vibration fallback triggered");
+}
+
+/**
+ * Trigger the high-glucose alarm.
+ * Pebble Time 2 uses a distinct rising three-tone signal.
+ */
+static void trigger_high_alarm(void) {
+#ifdef PBL_SPEAKER
+    if (!speaker_is_muted()) {
+        static const SpeakerNote notes[] = {
+            {
+                .midi_note = 72,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 180,
+                .velocity = 120,
+                .reserved = 0
+            },
+            {
+                .midi_note = 0,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 90,
+                .velocity = 0,
+                .reserved = 0
+            },
+            {
+                .midi_note = 76,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 180,
+                .velocity = 120,
+                .reserved = 0
+            },
+            {
+                .midi_note = 0,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 90,
+                .velocity = 0,
+                .reserved = 0
+            },
+            {
+                .midi_note = 79,
+                .waveform = SpeakerWaveformSquare,
+                .duration_ms = 300,
+                .velocity = 127,
+                .reserved = 0
+            }
+        };
+
+        speaker_play_notes(notes, ARRAY_LENGTH(notes), 90);
+        APP_LOG(APP_LOG_LEVEL_INFO, "High acoustic alarm triggered");
+        return;
+    }
+#endif
+
+    static const uint32_t pattern[] = {
+        90, 120, 90, 200, 90, 300, 90
+    };
+    vibes_enqueue_custom_pattern((VibePattern) {
+        .durations = pattern,
+        .num_segments = ARRAY_LENGTH(pattern)
+    });
+    APP_LOG(APP_LOG_LEVEL_INFO, "High vibration fallback triggered");
 }
 
 /**
@@ -555,6 +617,7 @@ static void hide_data_layers(void) {
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), true);
     layer_set_hidden(s_trend_layer, true);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), true);
+    layer_set_hidden(s_delta_triangle_layer, true);
     layer_set_hidden(text_layer_get_layer(s_time_ago_layer), true);
     layer_set_hidden(s_chart_layer, true);
     for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
@@ -870,8 +933,9 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     // Draw the vertical time grid even when there is no data yet.
 #ifdef PBL_COLOR
     GColor grid_color = GColorDarkGray;
+    GColor axis_text_color = s_reversed ? GColorBlack : GColorWhite;
     graphics_context_set_stroke_color(ctx, grid_color);
-    graphics_context_set_text_color(ctx, GColorLightGray);
+    graphics_context_set_text_color(ctx, axis_text_color);
 #else
     GColor line_color = s_reversed ? GColorBlack : GColorWhite;
     graphics_context_set_stroke_color(ctx, line_color);
@@ -940,30 +1004,98 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         plot_max = plot_min + min_span;
     }
 
+    // Find the exact screen position of the min/max measurement points.
+    // Their text labels will be vertically centered on these coordinates,
+    // allowing perfectly horizontal leader lines that hit the point centers.
+    bool have_min_point = false;
+    bool have_max_point = false;
+    int min_point_x = chart_left;
+    int min_point_y = bounds.origin.y + margin + chart_height;
+    int max_point_x = chart_left;
+    int max_point_y = bounds.origin.y + margin;
+
+    for (int i = 0; i < local_count; i++) {
+        int original_value = values[i];
+        int clamped_value = original_value;
+
+        if (clamped_value < plot_min) clamped_value = plot_min;
+        if (clamped_value > plot_max) clamped_value = plot_max;
+
+        int x;
+        if (local_count == 1) {
+            x = chart_right - CHART_DOT_RADIUS;
+        } else {
+            int display_index = local_count - 1 - i;
+            x = chart_left +
+                (display_index * (chart_right - chart_left)) /
+                (local_count - 1);
+        }
+
+        int y = bounds.origin.y + margin + chart_height -
+                ((clamped_value - plot_min) * chart_height /
+                 (plot_max - plot_min));
+
+        if (!have_min_point && original_value == raw_min) {
+            min_point_x = x;
+            min_point_y = y;
+            have_min_point = true;
+        }
+
+        if (!have_max_point && original_value == raw_max) {
+            max_point_x = x;
+            max_point_y = y;
+            have_max_point = true;
+        }
+    }
+
     // Draw the small min/max labels on the left.
     char min_buffer[8];
     char max_buffer[8];
     format_chart_axis_value(raw_min, min_buffer, sizeof(min_buffer));
     format_chart_axis_value(raw_max, max_buffer, sizeof(max_buffer));
 
+    const int axis_label_height = 24;
+
+    GRect max_label_rect =
+        GRect(
+            label_x,
+            max_point_y - (axis_label_height / 2),
+            CHART_LEFT_GUTTER - 2,
+            axis_label_height
+        );
+    GRect min_label_rect =
+        GRect(
+            label_x,
+            min_point_y - (axis_label_height / 2),
+            CHART_LEFT_GUTTER - 2,
+            axis_label_height
+        );
+
     graphics_draw_text(
         ctx,
         max_buffer,
-        fonts_get_system_font(FONT_KEY_GOTHIC_14),
-        GRect(label_x, bounds.origin.y + margin - 2, CHART_LEFT_GUTTER - 2, 16),
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        max_label_rect,
         GTextOverflowModeTrailingEllipsis,
         GTextAlignmentLeft,
         NULL
     );
-    graphics_draw_text(
-        ctx,
-        min_buffer,
-        fonts_get_system_font(FONT_KEY_GOTHIC_14),
-        GRect(label_x, bounds.origin.y + margin + chart_height - 12, CHART_LEFT_GUTTER - 2, 16),
-        GTextOverflowModeTrailingEllipsis,
-        GTextAlignmentLeft,
-        NULL
-    );
+
+    // When min and max are identical there is only one actual extremum point,
+    // so drawing the value twice would overlap.
+    bool same_extrema = raw_min == raw_max;
+
+    if (!same_extrema) {
+        graphics_draw_text(
+            ctx,
+            min_buffer,
+            fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+            min_label_rect,
+            GTextOverflowModeTrailingEllipsis,
+            GTextAlignmentLeft,
+            NULL
+        );
+    }
 
     // Draw low/high threshold lines only when they fall within the visible
     // dynamic chart range.
@@ -999,6 +1131,62 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
             int end_x = x + dash_length - 1;
             if (end_x > chart_right) end_x = chart_right;
             graphics_draw_line(ctx, GPoint(x, high_y), GPoint(end_x, high_y));
+        }
+    }
+
+// Use exactly the same stroke color and one-pixel thickness as the
+    // horizontal low/high threshold lines.
+#ifdef PBL_COLOR
+    graphics_context_set_stroke_color(ctx, GColorLightGray);
+#else
+    graphics_context_set_stroke_color(ctx, line_color);
+#endif
+
+    GSize max_label_size = graphics_text_layout_get_content_size(
+        max_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        max_label_rect,
+        GTextOverflowModeTrailingEllipsis,
+        GTextAlignmentLeft
+    );
+    GSize min_label_size = graphics_text_layout_get_content_size(
+        min_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        min_label_rect,
+        GTextOverflowModeTrailingEllipsis,
+        GTextAlignmentLeft
+    );
+
+    int max_label_line_x = max_label_rect.origin.x + max_label_size.w + 1;
+    int min_label_line_x = min_label_rect.origin.x + min_label_size.w + 1;
+
+    if (have_max_point) {
+        int end_x = max_point_x - CHART_DOT_RADIUS;
+        if (end_x > max_label_line_x) {
+            for (int x = max_label_line_x; x < end_x; x += 4) {
+                int dot_end_x = x + 1;
+                if (dot_end_x > end_x) dot_end_x = end_x;
+                graphics_draw_line(
+                    ctx,
+                    GPoint(x, max_point_y),
+                    GPoint(dot_end_x, max_point_y)
+                );
+            }
+        }
+    }
+
+    if (have_min_point && !same_extrema) {
+        int end_x = min_point_x - CHART_DOT_RADIUS;
+        if (end_x > min_label_line_x) {
+            for (int x = min_label_line_x; x < end_x; x += 4) {
+                int dot_end_x = x + 1;
+                if (dot_end_x > end_x) dot_end_x = end_x;
+                graphics_draw_line(
+                    ctx,
+                    GPoint(x, min_point_y),
+                    GPoint(dot_end_x, min_point_y)
+                );
+            }
         }
     }
 
@@ -1069,11 +1257,29 @@ static void format_chart_axis_value(int mgdl, char *buffer, size_t size) {
         return;
     }
 
-    if (strchr(s_cgm_value_buffer, '.') != NULL) {
-        int mmol_tenths = (mgdl * 100000 + 90091) / 180182;
-        snprintf(buffer, size, "%d.%d", mmol_tenths / 10, mmol_tenths % 10);
+    // CGM chart values are non-negative and far below 999 mg/dL.
+    // Explicitly clamp them so the compiler can verify the small text buffer.
+    unsigned int safe_mgdl;
+    if (mgdl < 0) {
+        safe_mgdl = 0;
+    } else if (mgdl > 999) {
+        safe_mgdl = 999;
     } else {
-        snprintf(buffer, size, "%d", mgdl);
+        safe_mgdl = (unsigned int)mgdl;
+    }
+
+    if (strchr(s_cgm_value_buffer, '.') != NULL) {
+        unsigned int mmol_tenths =
+            (safe_mgdl * 100000U + 90091U) / 180182U;
+        snprintf(
+            buffer,
+            size,
+            "%u.%u",
+            mmol_tenths / 10U,
+            mmol_tenths % 10U
+        );
+    } else {
+        snprintf(buffer, size, "%u", safe_mgdl);
     }
 }
 
@@ -1088,9 +1294,11 @@ static void update_layout_for_cgm_text(const char *cgm_text) {
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), false);
     layer_set_hidden(s_trend_layer, false);
 
-    // Check if this is a LOW or HIGH value - hide delta in these cases
+    // Check if this is a LOW or HIGH value - hide delta/update block in these cases
     bool hide_delta = (strcmp(cgm_text, "LOW") == 0 || strcmp(cgm_text, "HIGH") == 0);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), hide_delta);
+    layer_set_hidden(s_delta_triangle_layer, hide_delta);
+    layer_set_hidden(text_layer_get_layer(s_time_ago_layer), hide_delta);
 
     // Get the actual rendered width of the CGM text
     GSize cgm_size = graphics_text_layout_get_content_size(
@@ -1101,44 +1309,49 @@ static void update_layout_for_cgm_text(const char *cgm_text) {
         GTextAlignmentLeft
     );
 
-    // Get delta text width if visible
-    int delta_width = 0;
-    if (!hide_delta) {
-        GSize delta_size = graphics_text_layout_get_content_size(
-            s_delta_buffer,
-            fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
-            GRect(0, 0, 60, 32),
-            GTextOverflowModeTrailingEllipsis,
-            GTextAlignmentLeft
-        );
-        delta_width = delta_size.w;
-    }
+    // Fixed-width block for "last update" + triangle + delta
+    int delta_block_width = hide_delta ? 0 : 64;
 
-    // Calculate total width: CGM + gap + trend(30) + gap + delta
+    // Calculate total width: CGM + gap + trend(30) + gap + delta block
     int gap = 7;
     int trend_width = 30;
     int total_width = cgm_size.w + gap + trend_width;
     if (!hide_delta) {
-        total_width += gap + delta_width;
+        total_width += gap + delta_block_width;
     }
 
-    // Center the entire row (offset -5 to compensate for visual imbalance)
-    int start_x = (SCREEN_WIDTH - total_width) / 2 - 5;
+    // Center the entire row and bias it a little farther left so the
+    // visible left and right margins feel more equal.
+    int start_x = (SCREEN_WIDTH - total_width) / 2 - 8;
 
-    // Position CGM value layer
+    // Lift the main glucose value slightly so it visually matches the stacked
+    // height of "last update" + delta on the right.
+    // Nudge the glucose value 5 px to the right for fine alignment.
     layer_set_frame(text_layer_get_layer(s_cgm_value_layer),
-                    GRect(start_x, CGM_ROW_Y, 140, 52));
+                    GRect(start_x + 10, CGM_ROW_Y - 3, 140, 52));
 
     // Position trend arrow after CGM text
     int trend_x = start_x + cgm_size.w + gap;
     layer_set_frame(s_trend_layer,
-                    GRect(trend_x, CGM_ROW_Y + 12, 30, 30));
+                    GRect(trend_x, CGM_ROW_Y + 9, 30, 30));
 
-    // Position delta after trend
-    int delta_x = trend_x + trend_width + gap;
-    layer_set_frame(text_layer_get_layer(s_delta_layer),
-                    GRect(delta_x, CGM_ROW_Y + CGM_DELTA_Y_OFFSET, 60, 32));
+    // Position the stacked update/delta block after trend
+    if (!hide_delta) {
+        int delta_x = trend_x + trend_width + gap;
+
+        // Keep the right-side mini block visually closer to the right edge,
+        // while leaving the whole package slightly more left overall.
+        layer_set_frame(text_layer_get_layer(s_time_ago_layer),
+                        GRect(delta_x + 10, CGM_ROW_Y + 2, delta_block_width - 10, 22));
+
+        layer_set_frame(s_delta_triangle_layer,
+                        GRect(delta_x + 12, CGM_ROW_Y + 27, 12, 10));
+
+        layer_set_frame(text_layer_get_layer(s_delta_layer),
+                        GRect(delta_x + 24, CGM_ROW_Y + 21, delta_block_width - 24, 22));
+    }
 }
+
 
 /**
  * Update the hour labels shown below the vertical grid lines.
@@ -1216,6 +1429,26 @@ static void update_chart_hour_labels(void) {
 }
 
 /**
+ * Draw a small filled triangle before the delta value.
+ */
+static void delta_triangle_layer_update_proc(Layer *layer, GContext *ctx) {
+    GRect bounds = layer_get_bounds(layer);
+    GColor fg_color = s_reversed ? GColorBlack : GColorWhite;
+    graphics_context_set_stroke_color(ctx, fg_color);
+
+    int center_x = bounds.size.w / 2;
+
+    for (int y = 0; y < bounds.size.h; y++) {
+        int half_width = (y * center_x) / bounds.size.h;
+        graphics_draw_line(
+            ctx,
+            GPoint(center_x - half_width, y),
+            GPoint(center_x + half_width, y)
+        );
+    }
+}
+
+/**
  * Update time ago display based on stored data
  * Also handles showing "No Data" when CGM data is 60+ minutes old
  */
@@ -1233,18 +1466,49 @@ static void update_time_ago_display() {
     // Check if data is stale (60+ minutes old)
     bool is_stale = current_minutes_ago >= 60;
 
-    // Show/hide CGM value, trend arrow, and delta based on staleness
+    // Show/hide CGM value, trend arrow, delta and triangle based on staleness.
+    // Keep the "last update" text visible so the user can still see how old
+    // the last sensor value is.
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), is_stale);
     layer_set_hidden(s_trend_layer, is_stale);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), is_stale);
+    layer_set_hidden(s_delta_triangle_layer, is_stale);
     layer_set_hidden(text_layer_get_layer(s_no_data_layer), !is_stale);
 
-    // The bottom-right "time ago" text has been removed.
-    text_layer_set_text(s_time_ago_layer, "");
-    layer_set_hidden(text_layer_get_layer(s_time_ago_layer), true);
+    if (current_minutes_ago < 1000) {
+        snprintf(s_time_ago_buffer, sizeof(s_time_ago_buffer), "%dmin", current_minutes_ago);
+    } else {
+        snprintf(s_time_ago_buffer, sizeof(s_time_ago_buffer), "999+");
+    }
+    text_layer_set_text(s_time_ago_layer, s_time_ago_buffer);
+    layer_set_hidden(text_layer_get_layer(s_time_ago_layer), false);
 
     // Update alert visibility based on staleness
     update_alert_visibility();
+}
+
+/**
+ * Update the German weekday and date shown at the top right.
+ * Example: "Sa 25.07."
+ */
+static void update_date(void) {
+    static const char *WEEKDAYS_DE[] = {
+        "So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"
+    };
+
+    time_t now = time(NULL);
+    struct tm *tick_time = localtime(&now);
+
+    snprintf(
+        s_date_buffer,
+        sizeof(s_date_buffer),
+        "%s %02d.%02d.",
+        WEEKDAYS_DE[tick_time->tm_wday],
+        tick_time->tm_mday,
+        tick_time->tm_mon + 1
+    );
+
+    text_layer_set_text(s_date_layer, s_date_buffer);
 }
 
 /**
@@ -1268,6 +1532,7 @@ static void update_time() {
     // Set time text
     snprintf(s_time_buffer, sizeof(s_time_buffer), "%s", time_ptr);
     text_layer_set_text(s_time_layer, s_time_buffer);
+    update_date();
     update_chart_hour_labels();
 
 }
@@ -1453,26 +1718,14 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         s_poll_interval_minutes = interval;
     }
 
-    // Handle alert vibration
+    // Handle glucose alarm
     Tuple *alert_tuple = dict_find(iterator, KEY_CGM_ALERT);
     if (alert_tuple) {
         uint8_t alert_type = alert_tuple->value->uint8;
         if (alert_type == ALERT_LOW_SOON) {
-            // Low soon alert: accelerating pattern
-            static const uint32_t low_soon_pattern[] = { 70, 300, 70, 200, 70, 120, 70, 80, 70 };
-            vibes_enqueue_custom_pattern((VibePattern) {
-                .durations = low_soon_pattern,
-                .num_segments = ARRAY_LENGTH(low_soon_pattern)
-            });
-            APP_LOG(APP_LOG_LEVEL_INFO, "Low soon alert vibration triggered");
+            trigger_low_soon_alarm();
         } else if (alert_type == ALERT_HIGH) {
-            // High alert pattern
-            static const uint32_t high_pattern[] = { 90, 120, 90, 200, 90, 300, 90 };
-            vibes_enqueue_custom_pattern((VibePattern) {
-                .durations = high_pattern,
-                .num_segments = ARRAY_LENGTH(high_pattern)
-            });
-            APP_LOG(APP_LOG_LEVEL_INFO, "High alert vibration triggered");
+            trigger_high_alarm();
         }
     }
 
@@ -1575,18 +1828,23 @@ static void main_window_load(Window *window) {
     // - Time ago - height ~20
     // - Chart - remaining space
 
-    // Time layer - medium numbers font, left-aligned
+    // Time and date use exactly the same font and vertical frame so their
+    // baselines and visual heights match.
     s_time_layer = create_text_layer(
-        GRect(8, TIME_ROW_Y, 100, 40),
-        fonts_get_system_font(FONT_KEY_BITHAM_34_MEDIUM_NUMBERS),
+        GRect(8, TIME_ROW_Y, 84, 40),
+        fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
         GTextAlignmentLeft
     );
     layer_add_child(window_layer, text_layer_get_layer(s_time_layer));
 
-    // Battery layer - top right corner
-    s_battery_layer = layer_create(GRect(bounds.size.w - 36, 4, 30, 22));
-    layer_set_update_proc(s_battery_layer, battery_layer_update_proc);
-    layer_add_child(window_layer, s_battery_layer);
+    // German weekday/date - top right
+    s_date_layer = create_text_layer(
+        GRect(92, TIME_ROW_Y, bounds.size.w - 100, 40),
+        fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
+        GTextAlignmentRight
+    );
+    text_layer_set_text(s_date_layer, "");
+    layer_add_child(window_layer, text_layer_get_layer(s_date_layer));
 
     // Divider line between time/date and CGM value row
     s_divider_layer = layer_create(GRect(0, DIVIDER_Y, bounds.size.w, 1));
@@ -1613,15 +1871,22 @@ static void main_window_load(Window *window) {
     layer_add_child(window_layer, s_trend_layer);
 
     // Delta layer (position updated dynamically)
-    // Hidden initially until data arrives
+    // Shown below the "last update" text, with a small triangle in front.
     s_delta_layer = create_text_layer(
-        GRect(140, CGM_ROW_Y + 7, 60, 32),
-        fonts_get_system_font(FONT_KEY_GOTHIC_28_BOLD),
-        GTextAlignmentLeft
+        GRect(162, CGM_ROW_Y + 20, 42, 22),
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        GTextAlignmentRight
     );
     text_layer_set_text(s_delta_layer, "");
     layer_set_hidden(text_layer_get_layer(s_delta_layer), true);
     layer_add_child(window_layer, text_layer_get_layer(s_delta_layer));
+
+    s_delta_triangle_layer = layer_create(
+        GRect(140, CGM_ROW_Y + 27, 12, 10)
+    );
+    layer_set_update_proc(s_delta_triangle_layer, delta_triangle_layer_update_proc);
+    layer_set_hidden(s_delta_triangle_layer, true);
+    layer_add_child(window_layer, s_delta_triangle_layer);
 
     // "No Data" layer - shown when CGM data is 60+ minutes old, centered in CGM value area
     s_no_data_layer = create_text_layer(
@@ -1638,10 +1903,10 @@ static void main_window_load(Window *window) {
     layer_set_update_proc(s_chart_layer, chart_layer_update_proc);
     layer_add_child(window_layer, s_chart_layer);
 
-    // Time ago layer - bottom of screen, right-aligned
+    // Last update layer - shown above the delta value
     s_time_ago_layer = create_text_layer(
-        GRect(0, BOTTOM_ROW_Y, bounds.size.w - 8, 28),
-        fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
+        GRect(148, CGM_ROW_Y + 1, 56, 22),
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
         GTextAlignmentRight
     );
     text_layer_set_text(s_time_ago_layer, "");
@@ -1677,7 +1942,7 @@ static void main_window_load(Window *window) {
         fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
         GTextAlignmentCenter
     );
-    text_layer_set_text(s_setup_layer, "Go to T1000 >\nSettings to\nfinish setup.");
+    text_layer_set_text(s_setup_layer, "OpenLibreLinkUp >\nSettings to\nfinish setup.");
     layer_set_hidden(text_layer_get_layer(s_setup_layer), true);
     layer_add_child(window_layer, text_layer_get_layer(s_setup_layer));
 
@@ -1722,6 +1987,7 @@ static void main_window_unload(Window *window) {
     text_layer_destroy(s_time_layer);
     text_layer_destroy(s_cgm_value_layer);
     text_layer_destroy(s_delta_layer);
+    layer_destroy(s_delta_triangle_layer);
     text_layer_destroy(s_time_ago_layer);
     for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
         text_layer_destroy(s_hour_label_layers[i]);
@@ -1732,7 +1998,7 @@ static void main_window_unload(Window *window) {
     layer_destroy(s_chart_layer);
     layer_destroy(s_divider_layer);
     layer_destroy(s_loading_layer);
-    layer_destroy(s_battery_layer);
+    text_layer_destroy(s_date_layer);
     layer_destroy(s_sync_layer);
     layer_destroy(s_alert_layer);
 
@@ -1753,9 +2019,6 @@ static void init() {
     // Register tick handler
     tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
 
-    // Register battery state handler and get initial state
-    battery_state_service_subscribe(battery_handler);
-    battery_handler(battery_state_service_peek());
 
     // Register AppMessage callbacks
     app_message_register_inbox_received(inbox_received_callback);
@@ -1773,7 +2036,6 @@ static void init() {
  */
 static void deinit() {
     tick_timer_service_unsubscribe();
-    battery_state_service_unsubscribe();
     window_destroy(s_main_window);
 }
 

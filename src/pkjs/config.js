@@ -147,7 +147,7 @@ module.exports = [
 			{
 				type: "toggle",
 				messageKey: "vibeLowSoonEnabled",
-				label: "Enable low soon alert vibration",
+				label: "Enable low soon acoustic alarm",
 				defaultValue: false
 			},
 			{
@@ -164,7 +164,7 @@ module.exports = [
 			},
 			{
 				type: "text",
-				defaultValue: "<small>Vibrate when predicted to be below this value in 20 minutes.</small>"
+				defaultValue: "<small>Play a sound when predicted to be below this value in 20 minutes. If the watch is muted, vibration is used instead.</small>"
 			},
 			{
 				type: "slider",
@@ -187,7 +187,7 @@ module.exports = [
 			{
 				type: "toggle",
 				messageKey: "vibeEnabled",
-				label: "Enable high alert vibration",
+				label: "Enable high acoustic alarm",
 				defaultValue: false
 			},
 			{

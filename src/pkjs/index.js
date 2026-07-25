@@ -1,5 +1,5 @@
 /**
- * T1000 CGM Watchface - PebbleKit JS
+ * OpenLibreLinkUp Watchface - PebbleKit JS
  *
  * Handles LibreLinkUp authentication, data fetching, and smart polling.
  * Keeps the original watch-side message format so the existing UI remains unchanged.
@@ -1105,7 +1105,7 @@ function checkLowSoonAlert(readings) {
 
 		if (shouldVibe) {
 			console.log(
-				"Triggering low soon alert vibration (current: " +
+				"Triggering low soon alarm (current: " +
 					currentValue +
 					", predicted: " +
 					Math.round(predictedValue) +
@@ -1122,7 +1122,7 @@ function checkLowSoonAlert(readings) {
 }
 
 /**
- * Check if vibration alert should trigger
+ * Check if high alarm should trigger
  */
 function checkVibrationAlert(value) {
 	if (!settings.vibeEnabled) {
@@ -1154,7 +1154,7 @@ function checkVibrationAlert(value) {
 			}
 
 			if (shouldVibe) {
-				console.log("Triggering high alert vibration");
+				console.log("Triggering high alarm");
 				pendingAlert = ALERT_HIGH;
 				lastHighVibeTime = now;
 				saveVibeState();

@@ -1,6 +1,6 @@
 {
-  "name": "t1000-color",
-  "author": "Andrew Childs",
+  "name": "open-libre-link-up",
+  "author": "Marukitano",
   "version": "1.1.2",
   "description": "Displays real-time Dexcom CGM glucose and Heart Rate data on a Pebble Time 2.",
   "license": "MIT",
@@ -29,7 +29,7 @@
       "configurable"
     ],
     "projectType": "native",
-    "displayName": "T1000",
+    "displayName": "OpenLibreLinkUp",
     "uuid": "a3b7f192-4c6d-4e8a-b5f1-9d2c7e8f0a1b",
     "watchapp": {
       "watchface": true,
