@@ -940,24 +940,25 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     struct tm *tick_time = localtime(&now);
     int current_minute = tick_time->tm_min;
     int chart_width = chart_right - chart_left;
-    int chart_window_minutes =
-        ((CHART_DISPLAY_HOURS - 1) * 60) + current_minute;
+    const int chart_window_minutes = 210;
 
     // Show the four previous full hours from the left edge through the
     // current time at the right edge. At 20:02 this is 16:00 to 20:02.
     for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
         int minutes_ago = current_minute + (i * 60);
 
-        if (
-            minutes_ago < 0 ||
-            minutes_ago > chart_window_minutes
-        ) {
-            continue;
-        }
-
         int x = chart_right -
                 (minutes_ago * chart_width) /
                 chart_window_minutes;
+
+        // Keep the time scale fixed at four hours. Old grid lines slide out
+        // on the left instead of stretching the whole chart.
+        if (
+            x < bounds.origin.x ||
+            x >= bounds.origin.x + bounds.size.w
+        ) {
+            continue;
+        }
 
         graphics_draw_line(
             ctx,
@@ -1067,16 +1068,6 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
             axis_label_height
         );
 
-    graphics_draw_text(
-        ctx,
-        max_buffer,
-        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
-        max_label_rect,
-        GTextOverflowModeTrailingEllipsis,
-        GTextAlignmentLeft,
-        NULL
-    );
-
     // Keep both labels when their displayed values differ by at least
     // 0.2 mmol/L (or roughly 4 mg/dL). With a smaller gap, only show max.
     bool show_min_label = false;
@@ -1092,6 +1083,58 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     } else {
         show_min_label = raw_max - raw_min >= 4;
     }
+
+    // Clear only the area actually occupied by the text, plus one pixel.
+    // This keeps the grid interruption small instead of blanking the complete
+    // 24-pixel label rectangle.
+    GSize max_clear_size = graphics_text_layout_get_content_size(
+        max_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        max_label_rect,
+        GTextOverflowModeTrailingEllipsis,
+        GTextAlignmentLeft
+    );
+    GSize min_clear_size = graphics_text_layout_get_content_size(
+        min_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        min_label_rect,
+        GTextOverflowModeTrailingEllipsis,
+        GTextAlignmentLeft
+    );
+
+    // The font layout contains a few empty pixels above the visible glyphs.
+    // Move the cleared area down while keeping its lower edge unchanged, so
+    // the grid has roughly one pixel of space above and below the numbers.
+    const int clear_top_inset = 6;
+
+    GRect max_clear_rect = GRect(
+        max_label_rect.origin.x,
+        max_label_rect.origin.y + clear_top_inset,
+        max_clear_size.w + 1,
+        max_clear_size.h + 1 - clear_top_inset
+    );
+    GRect min_clear_rect = GRect(
+        min_label_rect.origin.x,
+        min_label_rect.origin.y + clear_top_inset,
+        min_clear_size.w + 1,
+        min_clear_size.h + 1 - clear_top_inset
+    );
+
+    graphics_context_set_fill_color(ctx, bg_color);
+    graphics_fill_rect(ctx, max_clear_rect, 0, GCornerNone);
+    if (show_min_label) {
+        graphics_fill_rect(ctx, min_clear_rect, 0, GCornerNone);
+    }
+
+    graphics_draw_text(
+        ctx,
+        max_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+        max_label_rect,
+        GTextOverflowModeTrailingEllipsis,
+        GTextAlignmentLeft,
+        NULL
+    );
 
     if (show_min_label) {
         graphics_draw_text(
@@ -1414,8 +1457,7 @@ static void update_chart_hour_labels(void) {
     int chart_right = SCREEN_WIDTH - CHART_EDGE_MARGIN;
     int chart_width = chart_right - chart_left;
     int label_width = 30;
-    int chart_window_minutes =
-        ((CHART_DISPLAY_HOURS - 1) * 60) + current_minute;
+    const int chart_window_minutes = 210;
 
     // The oldest full hour sits at the left edge and the current time at
     // the right edge. The five labels therefore remain visible together.
@@ -1425,9 +1467,17 @@ static void update_chart_hour_labels(void) {
         int minutes_ago =
             newest_hour_offset_minutes + (i * 60);
 
+        int x = chart_right -
+                (minutes_ago * chart_width) /
+                chart_window_minutes;
+        int label_x = x - (label_width / 2);
+
+        // Keep a label visible while any part of it is still on-screen.
+        // This makes the oldest hour disappear gradually on the left and
+        // the newest hour appear gradually on the right.
         bool visible =
-            minutes_ago >= 0 &&
-            minutes_ago <= chart_window_minutes;
+            label_x < SCREEN_WIDTH &&
+            label_x + label_width > 0;
 
         layer_set_hidden(
             text_layer_get_layer(s_hour_label_layers[i]),
@@ -1458,16 +1508,6 @@ static void update_chart_hour_labels(void) {
             s_hour_label_layers[i],
             s_hour_label_buffers[i]
         );
-
-        int x = chart_right -
-                (minutes_ago * chart_width) /
-                chart_window_minutes;
-
-        // Keep the label centered under its grid line, even when part of the
-        // label lies outside the display. Pebble clips it naturally, so the
-        // oldest hour disappears gradually on the left and the newest hour
-        // appears gradually on the right.
-        int label_x = x - (label_width / 2);
 
         layer_set_frame(
             text_layer_get_layer(s_hour_label_layers[i]),
