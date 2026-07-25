@@ -58,6 +58,16 @@ module.exports = [
 				defaultValue: false
 			},
 			{
+				type: "toggle",
+				messageKey: "quickView",
+				label: "Quick View color band",
+				defaultValue: false
+			},
+			{
+				type: "text",
+				defaultValue: "<small>Shows a green, yellow or red band behind the current glucose row. All values inside the band are black.</small>"
+			},
+			{
 				type: "select",
 				messageKey: "unit",
 				label: "Glucose Units",

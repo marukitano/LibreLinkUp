@@ -27,6 +27,7 @@ var KEY_GOOD_COLOR = 13;
 var KEY_WARNING_COLOR = 14;
 var KEY_ALARM_COLOR = 15;
 var KEY_POLL_INTERVAL = 16;
+var KEY_QUICK_VIEW = 17;
 
 // LibreLinkUp API endpoints
 var LIBRE_URLS = {
@@ -67,6 +68,7 @@ var settings = {
 	server: "europe",
 	unit: "mgdl",
 	reversed: false,
+	quickView: false,
 	highThreshold: 180,
 	lowThreshold: 70,
 	vibeLowSoonEnabled: false,
@@ -953,6 +955,7 @@ function processReadings(readings, fromCache) {
 	message[KEY_ALARM_COLOR] = colorToRgbInt(settings.alarmColor, "0xFF0000");
 	message[KEY_POLL_INTERVAL] = settings.pollIntervalMinutes;
 	message[KEY_REVERSED] = settings.reversed ? 1 : 0;
+	message[KEY_QUICK_VIEW] = settings.quickView ? 1 : 0;
 	message[KEY_NEEDS_SETUP] = 0;
 	message[KEY_SYNC_ERROR] = 0; // Success - no sync error
 
@@ -1175,6 +1178,7 @@ function sendError(errorText, needsSetup) {
 	message[KEY_CGM_TREND] = 255; // Special value: hide trend icon
 	message[KEY_CGM_TIME_AGO] = 0;
 	message[KEY_NEEDS_SETUP] = needsSetup ? 1 : 0;
+	message[KEY_QUICK_VIEW] = settings.quickView ? 1 : 0;
 	// Signal sync error unless this is just a setup issue
 	message[KEY_SYNC_ERROR] = needsSetup ? 0 : 1;
 
@@ -1263,6 +1267,7 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		server: settings.server,
 		unit: settings.unit,
 		reversed: settings.reversed,
+		quickView: settings.quickView,
 		lowThresholdMmol: thresholdForSettings(settings.lowThreshold),
 		highThresholdMmol: thresholdForSettings(settings.highThreshold),
 		vibeLowSoonEnabled: settings.vibeLowSoonEnabled,
@@ -1305,6 +1310,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.server !== undefined) settings.server = dict.server.value || "europe";
 	if (dict.unit !== undefined) settings.unit = dict.unit.value || "mgdl";
 	if (dict.reversed !== undefined) settings.reversed = !!dict.reversed.value;
+	if (dict.quickView !== undefined) settings.quickView = !!dict.quickView.value;
 	if (dict.highThresholdMmol !== undefined)
 		settings.highThreshold = thresholdToMgdl(dict.highThresholdMmol.value, 180);
 	if (dict.lowThresholdMmol !== undefined)

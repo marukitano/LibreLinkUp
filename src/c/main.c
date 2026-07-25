@@ -24,6 +24,7 @@
 #define KEY_WARNING_COLOR 14
 #define KEY_ALARM_COLOR   15
 #define KEY_POLL_INTERVAL 16
+#define KEY_QUICK_VIEW    17
 
 // Trend arrow indices
 #define TREND_NONE        0
@@ -61,6 +62,7 @@
 static Window *s_main_window;
 static Layer *s_chart_layer;
 static Layer *s_divider_layer;
+static Layer *s_quick_view_layer;
 static TextLayer *s_date_layer;
 static Layer *s_sync_layer;
 static Layer *s_alert_layer;
@@ -110,6 +112,10 @@ static GColor s_alarm_color = GColorRed;
 // Display mode (false = white on black, true = black on white)
 static bool s_reversed = false;
 
+// Optional colored background band for fast glucose-status recognition.
+static bool s_quick_view_enabled = false;
+static bool s_quick_view_active = false;
+
 // Retry tracking for outbox failures
 static bool s_is_retry = false;
 static bool s_has_outbox_failure = false;  // True after retry also fails
@@ -136,6 +142,9 @@ static AppTimer *s_loading_timeout_timer;
 // Forward declarations
 static void update_trend_icon(uint8_t trend);
 static void update_current_glucose_color(void);
+static void apply_cgm_row_colors(void);
+static void update_quick_view_state(void);
+static void quick_view_layer_update_proc(Layer *layer, GContext *ctx);
 static void trend_layer_update_proc(Layer *layer, GContext *ctx);
 static void update_layout_for_cgm_text(const char *cgm_text);
 static void update_time_ago_display(void);
@@ -169,11 +178,6 @@ static void apply_colors() {
     // Update text layer colors
     text_layer_set_text_color(s_time_layer, fg_color);
     text_layer_set_text_color(s_date_layer, fg_color);
-    text_layer_set_text_color(s_delta_layer, fg_color);
-    if (s_delta_triangle_layer) {
-        layer_mark_dirty(s_delta_triangle_layer);
-    }
-    text_layer_set_text_color(s_time_ago_layer, fg_color);
     text_layer_set_text_color(s_setup_layer, fg_color);
     for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
         if (s_hour_label_layers[i]) {
@@ -602,12 +606,18 @@ static void show_data_layers(void) {
             layer_set_hidden(text_layer_get_layer(s_hour_label_layers[i]), false);
         }
     }
+    update_quick_view_state();
 }
 
 /**
  * Hide all CGM data layers
  */
 static void hide_data_layers(void) {
+    s_quick_view_active = false;
+    if (s_quick_view_layer) {
+        layer_set_hidden(s_quick_view_layer, true);
+    }
+
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), true);
     layer_set_hidden(s_trend_layer, true);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), true);
@@ -620,6 +630,7 @@ static void hide_data_layers(void) {
         }
     }
     layer_set_hidden(text_layer_get_layer(s_no_data_layer), true);
+    apply_cgm_row_colors();
 }
 
 /**
@@ -779,18 +790,83 @@ static GColor get_current_glucose_color(void) {
 }
 
 /**
- * Apply the point color to the large glucose value and trend arrow.
+ * Draw the optional Quick View background band.
  */
-static void update_current_glucose_color(void) {
-    GColor color = get_current_glucose_color();
-
-    if (s_cgm_value_layer) {
-        text_layer_set_text_color(s_cgm_value_layer, color);
+static void quick_view_layer_update_proc(Layer *layer, GContext *ctx) {
+    if (!s_quick_view_active) {
+        return;
     }
 
+    graphics_context_set_fill_color(ctx, get_current_glucose_color());
+    graphics_fill_rect(ctx, layer_get_bounds(layer), 0, GCornerNone);
+}
+
+/**
+ * Apply the correct foreground colors to every item in the CGM row.
+ * Quick View always uses black text and symbols.
+ */
+static void apply_cgm_row_colors(void) {
+    GColor normal_fg = s_reversed ? GColorBlack : GColorWhite;
+    GColor value_color = s_quick_view_active
+        ? GColorBlack
+        : get_current_glucose_color();
+    GColor info_color = s_quick_view_active
+        ? GColorBlack
+        : normal_fg;
+
+    if (s_cgm_value_layer) {
+        text_layer_set_text_color(s_cgm_value_layer, value_color);
+    }
+    if (s_delta_layer) {
+        text_layer_set_text_color(s_delta_layer, info_color);
+    }
+    if (s_time_ago_layer) {
+        text_layer_set_text_color(s_time_ago_layer, info_color);
+    }
     if (s_trend_layer) {
         layer_mark_dirty(s_trend_layer);
     }
+    if (s_delta_triangle_layer) {
+        layer_mark_dirty(s_delta_triangle_layer);
+    }
+    if (s_quick_view_layer) {
+        layer_mark_dirty(s_quick_view_layer);
+    }
+}
+
+/**
+ * Apply the point color to the large glucose value and trend arrow.
+ */
+static void update_current_glucose_color(void) {
+    apply_cgm_row_colors();
+}
+
+/**
+ * Show Quick View only while a valid, non-stale glucose value is visible.
+ */
+static void update_quick_view_state(void) {
+    bool active = false;
+
+    if (
+        s_quick_view_enabled &&
+        !s_is_loading &&
+        s_last_minutes_ago >= 0 &&
+        s_last_data_time > 0 &&
+        parse_display_glucose_to_mgdl(s_cgm_value_buffer) > 0
+    ) {
+        time_t now = time(NULL);
+        int elapsed_minutes = (int)((now - s_last_data_time) / 60);
+        int current_minutes_ago = s_last_minutes_ago + elapsed_minutes;
+        active = current_minutes_ago < 60;
+    }
+
+    s_quick_view_active = active;
+
+    if (s_quick_view_layer) {
+        layer_set_hidden(s_quick_view_layer, !active);
+    }
+
+    apply_cgm_row_colors();
 }
 
 /**
@@ -822,7 +898,7 @@ static void trend_layer_update_proc(Layer *layer, GContext *ctx) {
 
     graphics_context_set_stroke_color(
         ctx,
-        get_current_glucose_color()
+        s_quick_view_active ? GColorBlack : get_current_glucose_color()
     );
 
     switch (s_current_trend) {
@@ -1526,7 +1602,9 @@ static void update_chart_hour_labels(void) {
  */
 static void delta_triangle_layer_update_proc(Layer *layer, GContext *ctx) {
     GRect bounds = layer_get_bounds(layer);
-    GColor fg_color = s_reversed ? GColorBlack : GColorWhite;
+    GColor fg_color = s_quick_view_active
+        ? GColorBlack
+        : (s_reversed ? GColorBlack : GColorWhite);
     graphics_context_set_stroke_color(ctx, fg_color);
 
     int center_x = bounds.size.w / 2;
@@ -1567,6 +1645,7 @@ static void update_time_ago_display() {
     layer_set_hidden(text_layer_get_layer(s_delta_layer), is_stale);
     layer_set_hidden(s_delta_triangle_layer, is_stale);
     layer_set_hidden(text_layer_get_layer(s_no_data_layer), !is_stale);
+    update_quick_view_state();
 
     if (current_minutes_ago < 1000) {
         snprintf(s_time_ago_buffer, sizeof(s_time_ago_buffer), "%dmin", current_minutes_ago);
@@ -1831,6 +1910,13 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         }
     }
 
+    // Read optional Quick View color-band setting.
+    Tuple *quick_view_tuple = dict_find(iterator, KEY_QUICK_VIEW);
+    if (quick_view_tuple) {
+        s_quick_view_enabled = quick_view_tuple->value->uint8 != 0;
+        update_quick_view_state();
+    }
+
     // Check for setup needed message
     Tuple *needs_setup_tuple = dict_find(iterator, KEY_NEEDS_SETUP);
     if (needs_setup_tuple && needs_setup_tuple->value->uint8) {
@@ -1942,6 +2028,22 @@ static void main_window_load(Window *window) {
     s_divider_layer = layer_create(GRect(0, DIVIDER_Y, bounds.size.w, 1));
     layer_set_update_proc(s_divider_layer, divider_layer_update_proc);
     layer_add_child(window_layer, s_divider_layer);
+
+    // Optional full-width Quick View status band behind the CGM row.
+    s_quick_view_layer = layer_create(
+        GRect(
+            0,
+            DIVIDER_Y + 1,
+            bounds.size.w,
+            CHART_Y - DIVIDER_Y - 1
+        )
+    );
+    layer_set_update_proc(
+        s_quick_view_layer,
+        quick_view_layer_update_proc
+    );
+    layer_set_hidden(s_quick_view_layer, true);
+    layer_add_child(window_layer, s_quick_view_layer);
 
     // CGM value layer - large font for glucose reading (position updated dynamically)
     // Hidden initially until data arrives to avoid showing wrong position
@@ -2089,6 +2191,7 @@ static void main_window_unload(Window *window) {
     layer_destroy(s_trend_layer);
     layer_destroy(s_chart_layer);
     layer_destroy(s_divider_layer);
+    layer_destroy(s_quick_view_layer);
     layer_destroy(s_loading_layer);
     text_layer_destroy(s_date_layer);
     layer_destroy(s_sync_layer);

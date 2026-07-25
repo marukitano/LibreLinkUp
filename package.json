@@ -55,7 +55,8 @@
       "good_color": 13,
       "warning_color": 14,
       "alarm_color": 15,
-      "poll_interval": 16
+      "poll_interval": 16,
+      "quick_view": 17
     },
     "resources": {
       "media": []
