@@ -43,9 +43,6 @@
 
 // Chart configuration
 #define CHART_MAX_POINTS  26  // 130 minutes / 5 minutes = 26 points
-#define CHART_DOT_SPACING 8   // Pixels between dots (scaled for 200px width)
-#define CHART_Y_MIN       40   // internal mg/dL (about 2.2 mmol/L)
-#define CHART_Y_MAX       300  // internal mg/dL (about 16.7 mmol/L)
 #define CHART_DOT_RADIUS  4
 #define CHART_DISPLAY_HOURS 4  // 4h view: one vertical grid line per hour
 #define CHART_LEFT_GUTTER 32   // room for min/max in the same font as hour labels
@@ -53,11 +50,9 @@
 
 // Display layout constants for Pebble Time 2 (200x228)
 #define SCREEN_WIDTH       200
-#define SCREEN_HEIGHT      228
 #define TIME_ROW_Y         0
 #define DIVIDER_Y          44
 #define CGM_ROW_Y          52
-#define CGM_DELTA_Y_OFFSET 8
 #define CHART_Y            108
 #define CHART_HEIGHT       95
 #define BOTTOM_ROW_Y       196
@@ -118,7 +113,7 @@ static bool s_reversed = false;
 // Retry tracking for outbox failures
 static bool s_is_retry = false;
 static bool s_has_outbox_failure = false;  // True after retry also fails
-static bool s_has_sync_error = false;      // True when iOS app reports API error
+static bool s_has_sync_error = false;      // True when the phone app reports an API error
 
 // Sync spinner state (shown during data send/receive)
 static bool s_is_syncing = false;
@@ -200,7 +195,6 @@ static void apply_colors() {
     if (s_loading_layer) {
         layer_mark_dirty(s_loading_layer);
     }
-
 
     // Mark sync layer dirty to redraw with new colors
     if (s_sync_layer) {
@@ -690,8 +684,8 @@ static int parse_display_glucose_to_mgdl(const char *text) {
 
 /**
  * Parse compact chart history.
- * Preferred format: "120,125,130,..." (most recent first).
- * For backwards compatibility, "120:0,125:5,..." is also accepted.
+ * Current format: "120,125,130,..." (most recent first).
+ * The older "120:0,125:5,..." format remains accepted for compatibility.
  */
 static void parse_chart_history(const char *history) {
     if (history == NULL || history[0] == '\0') {
@@ -1247,7 +1241,6 @@ static void update_trend_icon(uint8_t trend) {
     layer_mark_dirty(s_trend_layer);
 }
 
-
 /**
  * Format a small chart axis value using the same style as the visible CGM value.
  * If the main value shows a decimal point, we assume mmol/L. Otherwise mg/dL.
@@ -1351,7 +1344,6 @@ static void update_layout_for_cgm_text(const char *cgm_text) {
                         GRect(delta_x + 24, CGM_ROW_Y + 21, delta_block_width - 24, 22));
     }
 }
-
 
 /**
  * Update the hour labels shown below the vertical grid lines.
@@ -1577,7 +1569,7 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     // Clear outbox failure flag on successful communication
     s_has_outbox_failure = false;
 
-    // Check for sync error flag from iOS app (API failure)
+    // Check for sync error flag from the phone app (API failure)
     Tuple *sync_error_tuple = dict_find(iterator, KEY_SYNC_ERROR);
     if (sync_error_tuple) {
         s_has_sync_error = sync_error_tuple->value->uint8 != 0;
@@ -1662,7 +1654,6 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     } else {
         APP_LOG(APP_LOG_LEVEL_WARNING, "No chart history in received message");
     }
-
 
     // Read threshold settings
     Tuple *low_threshold_tuple = dict_find(iterator, KEY_LOW_THRESHOLD);
@@ -1851,7 +1842,6 @@ static void main_window_load(Window *window) {
     layer_set_update_proc(s_divider_layer, divider_layer_update_proc);
     layer_add_child(window_layer, s_divider_layer);
 
-
     // CGM value layer - large font for glucose reading (position updated dynamically)
     // Hidden initially until data arrives to avoid showing wrong position
     s_cgm_value_layer = create_text_layer(
@@ -2018,7 +2008,6 @@ static void init() {
 
     // Register tick handler
     tick_timer_service_subscribe(MINUTE_UNIT, tick_handler);
-
 
     // Register AppMessage callbacks
     app_message_register_inbox_received(inbox_received_callback);

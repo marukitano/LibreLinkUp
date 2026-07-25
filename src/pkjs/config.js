@@ -1,7 +1,7 @@
 module.exports = [
 	{
 		type: "heading",
-		defaultValue: "LibreLinkUp Watchface Settings"
+		defaultValue: "OpenLibreLinkUp Settings"
 	},
 	{
 		type: "section",

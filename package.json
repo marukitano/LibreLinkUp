@@ -2,14 +2,17 @@
   "name": "open-libre-link-up",
   "author": "Marukitano",
   "version": "1.1.2",
-  "description": "Displays real-time Dexcom CGM glucose and Heart Rate data on a Pebble Time 2.",
+  "description": "Displays LibreLinkUp glucose data, trend, delta, age, alerts, and a rolling history chart on Pebble Time 2.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/andrewchilds/t1000-pebble-bw"
+    "url": "https://github.com/marukitano/LibreLinkUp"
   },
   "keywords": [
-    "pebble-app"
+    "pebble-app",
+    "pebble-time-2",
+    "librelinkup",
+    "cgm"
   ],
   "scripts": {
     "build": "pebble clean && pebble build",
@@ -36,90 +39,6 @@
       "hiddenApp": false,
       "onlyShownOnCommunication": false
     },
-    "resources": {
-      "media": [
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_NONE",
-          "file": "images/trend_none.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOUBLE_UP",
-          "file": "images/trend_double_up.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_UP",
-          "file": "images/trend_up.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_UP_45",
-          "file": "images/trend_up_45.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_FLAT",
-          "file": "images/trend_flat.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOWN_45",
-          "file": "images/trend_down_45.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOWN",
-          "file": "images/trend_down.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOUBLE_DOWN",
-          "file": "images/trend_double_down.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_NONE_BLACK",
-          "file": "images/trend_none_black.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOUBLE_UP_BLACK",
-          "file": "images/trend_double_up_black.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_UP_BLACK",
-          "file": "images/trend_up_black.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_UP_45_BLACK",
-          "file": "images/trend_up_45_black.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_FLAT_BLACK",
-          "file": "images/trend_flat_black.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOWN_45_BLACK",
-          "file": "images/trend_down_45_black.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOWN_BLACK",
-          "file": "images/trend_down_black.png"
-        },
-        {
-          "type": "png-trans",
-          "name": "IMAGE_TREND_DOUBLE_DOWN_BLACK",
-          "file": "images/trend_double_down_black.png"
-        }
-      ]
-    },
     "messageKeys": {
       "cgm_value": 0,
       "cgm_delta": 1,
@@ -133,7 +52,13 @@
       "needs_setup": 9,
       "reversed": 10,
       "sync_error": 11,
-      "meal_data": 12
+      "good_color": 13,
+      "warning_color": 14,
+      "alarm_color": 15,
+      "poll_interval": 16
+    },
+    "resources": {
+      "media": []
     }
   }
 }

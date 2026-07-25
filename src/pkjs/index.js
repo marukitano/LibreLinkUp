@@ -82,13 +82,13 @@ var settings = {
 	pollIntervalMinutes: 5
 };
 
-// Vibration state (persisted to localStorage to survive app restarts)
+// Alarm timing state (legacy variable/storage names retained for settings compatibility)
 var vibeHighConditionStartTime = null;
 var lastHighVibeTime = null;
 var lastLowSoonVibeTime = null;
 
 /**
- * Load persisted vibration state from localStorage
+ * Load persisted alarm timing state from localStorage
  */
 function loadVibeState() {
 	var stored = localStorage.getItem("vibe-state");
@@ -113,7 +113,7 @@ function loadVibeState() {
 }
 
 /**
- * Save vibration state to localStorage
+ * Save alarm timing state to localStorage
  */
 function saveVibeState() {
 	var state = {
@@ -425,7 +425,6 @@ function httpRequest(method, url, body, headers) {
 	});
 }
 
-
 /**
  * SHA-256 for LibreLinkUp's account-id header.
  * Returns a lowercase hexadecimal digest.
@@ -733,7 +732,6 @@ function parseLibreTimestamp(value) {
 	return new Date(year, month, day, hour, minute, second).getTime();
 }
 
-
 /**
  * LibreLinkUp FactoryTimestamp is UTC even when no timezone suffix is present.
  */
@@ -777,7 +775,6 @@ function parseLibreFactoryTimestamp(value) {
 	var parsed = Date.parse(text);
 	return isNaN(parsed) ? null : parsed;
 }
-
 
 /**
  * Normalize LibreLinkUp readings to the original internal Dexcom-like shape.
@@ -936,12 +933,10 @@ function processReadings(readings, fromCache) {
 	// Update last good reading time for smart polling
 	lastGoodReadingTime = latestTimestamp;
 
-	// Check vibration conditions (sets pendingAlert if needed)
+	// Check alarm conditions (sets pendingAlert if needed)
 	pendingAlert = ALERT_NONE;
 	checkLowSoonAlert(readings);
-	checkVibrationAlert(latestValue);
-
-
+	checkHighAlert(latestValue);
 
 	// Send data to watch
 	var message = {};
@@ -1124,7 +1119,7 @@ function checkLowSoonAlert(readings) {
 /**
  * Check if high alarm should trigger
  */
-function checkVibrationAlert(value) {
+function checkHighAlert(value) {
 	if (!settings.vibeEnabled) {
 		return;
 	}
@@ -1261,21 +1256,6 @@ function scheduleNextPoll() {
 Pebble.addEventListener("showConfiguration", function (e) {
 	console.log("Showing configuration");
 
-	// Remove obsolete Clay field names that previously stored mg/dL values.
-	// The new *Mmol keys are independent and always contain mmol/L values.
-	var oldClay = localStorage.getItem("clay-settings");
-	if (oldClay) {
-		try {
-			var oldParsed = JSON.parse(oldClay);
-			delete oldParsed.lowThresholdMmol;
-			delete oldParsed.highThresholdMmol;
-			delete oldParsed.vibeLowSoonThresholdMmol;
-			delete oldParsed.vibeHighThresholdMmol;
-			localStorage.setItem("clay-settings", JSON.stringify(oldParsed));
-		} catch (cleanupError) {
-			console.log("Could not clean old Clay values: " + cleanupError);
-		}
-	}
 	// Pass current settings to Clay so the form shows saved values
 	var claySettings = {
 		accountName: settings.accountName,
