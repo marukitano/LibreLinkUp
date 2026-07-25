@@ -23,7 +23,10 @@ var KEY_HIGH_THRESHOLD = 8;
 var KEY_NEEDS_SETUP = 9;
 var KEY_REVERSED = 10;
 var KEY_SYNC_ERROR = 11;
-var KEY_MEAL_DATA = 12;
+var KEY_GOOD_COLOR = 13;
+var KEY_WARNING_COLOR = 14;
+var KEY_ALARM_COLOR = 15;
+var KEY_POLL_INTERVAL = 16;
 
 // LibreLinkUp API endpoints
 var LIBRE_URLS = {
@@ -73,7 +76,10 @@ var settings = {
 	vibeHighThreshold: 250,
 	vibeDelayMinutes: 60,
 	vibeRepeatMinutes: 60,
-	saltieApiToken: ""
+	goodColor: "0x00AA55",
+	warningColor: "0xFFAA00",
+	alarmColor: "0xFF0000",
+	pollIntervalMinutes: 5
 };
 
 // Vibration state (persisted to localStorage to survive app restarts)
@@ -201,6 +207,9 @@ function loadSettings() {
 	} else {
 		console.log("No clay-settings found in localStorage");
 	}
+
+	// Convert older numeric Clay color values to canonical 0xRRGGBB strings.
+	normalizeColorSettings();
 }
 
 /**
@@ -238,6 +247,96 @@ function getLibreRegionalUrl(region) {
  */
 function mgdlToMmol(mgdl) {
 	return (mgdl / 18.0182).toFixed(1);
+}
+
+/**
+ * Convert a stored mg/dL threshold to the unit shown in settings.
+ */
+function thresholdForSettings(mgdl) {
+	return Number((mgdl / 18.0182).toFixed(1));
+}
+
+/**
+ * Convert a threshold entered in the selected unit back to internal mg/dL.
+ */
+function thresholdToMgdl(value, fallbackMgdl) {
+	var parsed = parseFloat(value);
+	if (!isFinite(parsed)) {
+		return fallbackMgdl;
+	}
+	return Math.round(parsed * 18.0182);
+}
+
+/**
+ * Convert Clay color values to 24-bit RGB.
+ *
+ * Clay may return a color either as:
+ * - a decimal number, for example 43605
+ * - a decimal string, for example "43605"
+ * - a hexadecimal string, for example "0x00AA55" or "#00AA55"
+ *
+ * Pure digit strings must be interpreted as decimal. Treating "43605" as
+ * hexadecimal produces 0x043605, which becomes nearly black on Pebble.
+ */
+function colorToRgbInt(value, fallback) {
+	var fallbackValue = fallback || "0xFFFFFF";
+
+	if (typeof value === "number" && isFinite(value)) {
+		return Math.round(value) & 0xFFFFFF;
+	}
+
+	var text = String(
+		value !== undefined && value !== null && value !== ""
+			? value
+			: fallbackValue
+	).trim();
+
+	var parsed;
+
+	if (/^0x[0-9a-f]+$/i.test(text)) {
+		parsed = parseInt(text.substring(2), 16);
+	} else if (/^#[0-9a-f]+$/i.test(text)) {
+		parsed = parseInt(text.substring(1), 16);
+	} else if (/^[0-9]+$/.test(text)) {
+		parsed = parseInt(text, 10);
+	} else if (/^[0-9a-f]+$/i.test(text)) {
+		parsed = parseInt(text, 16);
+	}
+
+	if (!isFinite(parsed)) {
+		return colorToRgbInt(fallbackValue, "0xFFFFFF");
+	}
+
+	return parsed & 0xFFFFFF;
+}
+
+/**
+ * Store colors in one unambiguous format for Clay and future app launches.
+ */
+function rgbIntToClayColor(value, fallback) {
+	var rgb = colorToRgbInt(value, fallback);
+	var hex = rgb.toString(16).toUpperCase();
+
+	while (hex.length < 6) {
+		hex = "0" + hex;
+	}
+
+	return "0x" + hex;
+}
+
+function normalizeColorSettings() {
+	settings.goodColor = rgbIntToClayColor(
+		settings.goodColor,
+		"0x00AA55"
+	);
+	settings.warningColor = rgbIntToClayColor(
+		settings.warningColor,
+		"0xFFAA00"
+	);
+	settings.alarmColor = rgbIntToClayColor(
+		settings.alarmColor,
+		"0xFF0000"
+	);
 }
 
 /**
@@ -781,50 +880,6 @@ function parseReadingTimestamp(dtString) {
 }
 
 /**
- * Get meal data string for today's meals within the chart timeframe (last 120 minutes or next 20 minutes)
- * Format: "carbs:minutesAgo,carbs:minutesAgo,..." (e.g., "35:30,42:-10")
- * Negative minutesAgo means future meal
- */
-function getMealDataString() {
-	var stored = localStorage.getItem("saltie-meals");
-	if (!stored) {
-		return "";
-	}
-
-	try {
-		var meals = JSON.parse(stored);
-		if (!meals || meals.length === 0) {
-			return "";
-		}
-
-		var now = Date.now();
-		var mealStrings = [];
-
-		for (var i = 0; i < meals.length; i++) {
-			var meal = meals[i];
-			if (!meal.eaten_at || !meal.carbs_counted) {
-				continue;
-			}
-
-			// Parse meal timestamp
-			var mealTime = new Date(meal.eaten_at).getTime();
-			var minutesAgo = Math.round((now - mealTime) / 60000);
-
-			// Include meals from the last 120 minutes OR upcoming meals in the next 20 minutes
-			if ((minutesAgo >= 0 && minutesAgo <= 120) || (minutesAgo < 0 && minutesAgo >= -20)) {
-				var carbs = Math.round(meal.carbs_counted);
-				mealStrings.push(carbs + ":" + minutesAgo);
-			}
-		}
-
-		return mealStrings.join(",");
-	} catch (e) {
-		console.log("Error parsing meal data: " + e);
-		return "";
-	}
-}
-
-/**
  * Process glucose readings and send to watch
  */
 function processReadings(readings, fromCache) {
@@ -870,13 +925,11 @@ function processReadings(readings, fromCache) {
 		}
 	}
 
-	// Build history string (value:minutesAgo pairs, most recent first)
-	// Format: "120:0,125:5,130:10" where second number is minutes ago from now
+	// Compact history: values only, most recent first.
+	// The chart uses equal horizontal spacing, so timestamps are unnecessary.
 	var history = readings
 		.map(function (r) {
-			var timestamp = parseReadingTimestamp(r.WT);
-			var minutesAgo = Math.round((now - timestamp) / 60000);
-			return r.Value + ":" + minutesAgo;
+			return Math.round(r.Value);
 		})
 		.join(",");
 
@@ -888,13 +941,7 @@ function processReadings(readings, fromCache) {
 	checkLowSoonAlert(readings);
 	checkVibrationAlert(latestValue);
 
-	// Fetch fresh Saltie data if token is configured
-	if (settings.saltieApiToken) {
-		fetchSaltieData();
-	}
 
-	// Get meal data string
-	var mealData = getMealDataString();
 
 	// Send data to watch
 	var message = {};
@@ -906,10 +953,13 @@ function processReadings(readings, fromCache) {
 	message[KEY_CGM_ALERT] = pendingAlert;
 	message[KEY_LOW_THRESHOLD] = settings.lowThreshold;
 	message[KEY_HIGH_THRESHOLD] = settings.highThreshold;
+	message[KEY_GOOD_COLOR] = colorToRgbInt(settings.goodColor, "0x00AA55");
+	message[KEY_WARNING_COLOR] = colorToRgbInt(settings.warningColor, "0xFFAA00");
+	message[KEY_ALARM_COLOR] = colorToRgbInt(settings.alarmColor, "0xFF0000");
+	message[KEY_POLL_INTERVAL] = settings.pollIntervalMinutes;
 	message[KEY_REVERSED] = settings.reversed ? 1 : 0;
 	message[KEY_NEEDS_SETUP] = 0;
 	message[KEY_SYNC_ERROR] = 0; // Success - no sync error
-	message[KEY_MEAL_DATA] = mealData;
 
 	console.log(
 		"Sending: value=" +
@@ -926,17 +976,27 @@ function processReadings(readings, fromCache) {
 			minutesAgo +
 			"min, history=" +
 			readings.length +
-			" points, meals=" +
-			mealData
+			" points"
+	);
+
+	console.log(
+		"Sending compact diagram: " +
+			readings.length +
+			" points, " +
+			history.length +
+			" bytes"
 	);
 
 	Pebble.sendAppMessage(
 		message,
 		function () {
-			console.log("Data sent to watch");
+			console.log("Current value and diagram sent to watch");
 		},
 		function (e) {
-			console.log("Error sending data: " + JSON.stringify(e));
+			console.log(
+				"Error sending current value and diagram: " +
+				JSON.stringify(e)
+			);
 		}
 	);
 
@@ -1179,32 +1239,7 @@ function fetchData() {
 }
 
 /**
- * Fetch Saltie meal data
- */
-function fetchSaltieData() {
-	if (!settings.saltieApiToken) {
-		console.log("No Saltie API token configured");
-		return;
-	}
-
-	console.log("Fetching Saltie meal data...");
-
-	httpRequest("GET", "https://api.saltie.app/api/v1/meals/today", null, {
-		"api-token": settings.saltieApiToken
-	})
-		.then(function (data) {
-			console.log("Saltie data received: " + JSON.stringify(data));
-			// Store the meal data for future use
-			localStorage.setItem("saltie-meals", JSON.stringify(data));
-		})
-		.catch(function (error) {
-			console.log("Saltie API error: " + error.message);
-		});
-}
-
-/**
- * Schedule the next LibreLinkUp poll at a fixed interval.
- * 150 seconds = 2 minutes 30 seconds.
+ * Schedule the next LibreLinkUp poll using the configured interval.
  */
 function scheduleNextPoll() {
 	if (pollTimer) {
@@ -1212,8 +1247,12 @@ function scheduleNextPoll() {
 		pollTimer = null;
 	}
 
-	console.log("Next poll in 300s");
-	pollTimer = setTimeout(fetchData, 300 * 1000);
+	var minutes = parseInt(settings.pollIntervalMinutes, 10) || 5;
+	if (minutes < 1) minutes = 1;
+	if (minutes > 10) minutes = 10;
+
+	console.log("Next poll in " + minutes + " minute(s)");
+	pollTimer = setTimeout(fetchData, minutes * 60 * 1000);
 }
 
 /**
@@ -1221,6 +1260,22 @@ function scheduleNextPoll() {
  */
 Pebble.addEventListener("showConfiguration", function (e) {
 	console.log("Showing configuration");
+
+	// Remove obsolete Clay field names that previously stored mg/dL values.
+	// The new *Mmol keys are independent and always contain mmol/L values.
+	var oldClay = localStorage.getItem("clay-settings");
+	if (oldClay) {
+		try {
+			var oldParsed = JSON.parse(oldClay);
+			delete oldParsed.lowThresholdMmol;
+			delete oldParsed.highThresholdMmol;
+			delete oldParsed.vibeLowSoonThresholdMmol;
+			delete oldParsed.vibeHighThresholdMmol;
+			localStorage.setItem("clay-settings", JSON.stringify(oldParsed));
+		} catch (cleanupError) {
+			console.log("Could not clean old Clay values: " + cleanupError);
+		}
+	}
 	// Pass current settings to Clay so the form shows saved values
 	var claySettings = {
 		accountName: settings.accountName,
@@ -1228,16 +1283,19 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		server: settings.server,
 		unit: settings.unit,
 		reversed: settings.reversed,
-		lowThreshold: settings.lowThreshold,
-		highThreshold: settings.highThreshold,
+		lowThresholdMmol: thresholdForSettings(settings.lowThreshold),
+		highThresholdMmol: thresholdForSettings(settings.highThreshold),
 		vibeLowSoonEnabled: settings.vibeLowSoonEnabled,
-		vibeLowSoonThreshold: settings.vibeLowSoonThreshold,
+		vibeLowSoonThresholdMmol: thresholdForSettings(settings.vibeLowSoonThreshold),
 		vibeLowSoonRepeatMinutes: settings.vibeLowSoonRepeatMinutes,
 		vibeEnabled: settings.vibeEnabled,
-		vibeHighThreshold: settings.vibeHighThreshold,
+		vibeHighThresholdMmol: thresholdForSettings(settings.vibeHighThreshold),
 		vibeDelayMinutes: settings.vibeDelayMinutes,
 		vibeRepeatMinutes: settings.vibeRepeatMinutes,
-		saltieApiToken: settings.saltieApiToken
+		goodColor: settings.goodColor,
+		warningColor: settings.warningColor,
+		alarmColor: settings.alarmColor,
+		pollIntervalMinutes: settings.pollIntervalMinutes
 	};
 
 	Pebble.openURL(clay.generateUrl(claySettings));
@@ -1267,20 +1325,43 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.server !== undefined) settings.server = dict.server.value || "europe";
 	if (dict.unit !== undefined) settings.unit = dict.unit.value || "mgdl";
 	if (dict.reversed !== undefined) settings.reversed = !!dict.reversed.value;
-	if (dict.highThreshold !== undefined) settings.highThreshold = parseInt(dict.highThreshold.value, 10) || 180;
-	if (dict.lowThreshold !== undefined) settings.lowThreshold = parseInt(dict.lowThreshold.value, 10) || 70;
+	if (dict.highThresholdMmol !== undefined)
+		settings.highThreshold = thresholdToMgdl(dict.highThresholdMmol.value, 180);
+	if (dict.lowThresholdMmol !== undefined)
+		settings.lowThreshold = thresholdToMgdl(dict.lowThresholdMmol.value, 70);
 	if (dict.vibeLowSoonEnabled !== undefined) settings.vibeLowSoonEnabled = !!dict.vibeLowSoonEnabled.value;
-	if (dict.vibeLowSoonThreshold !== undefined)
-		settings.vibeLowSoonThreshold = parseInt(dict.vibeLowSoonThreshold.value, 10) || 80;
+	if (dict.vibeLowSoonThresholdMmol !== undefined)
+		settings.vibeLowSoonThreshold = thresholdToMgdl(dict.vibeLowSoonThresholdMmol.value, 80);
 	if (dict.vibeLowSoonRepeatMinutes !== undefined)
 		settings.vibeLowSoonRepeatMinutes = parseInt(dict.vibeLowSoonRepeatMinutes.value, 10) || 30;
 	if (dict.vibeEnabled !== undefined) settings.vibeEnabled = !!dict.vibeEnabled.value;
-	if (dict.vibeHighThreshold !== undefined)
-		settings.vibeHighThreshold = parseInt(dict.vibeHighThreshold.value, 10) || 250;
+	if (dict.vibeHighThresholdMmol !== undefined)
+		settings.vibeHighThreshold = thresholdToMgdl(dict.vibeHighThresholdMmol.value, 250);
 	if (dict.vibeDelayMinutes !== undefined) settings.vibeDelayMinutes = parseInt(dict.vibeDelayMinutes.value, 10) || 60;
 	if (dict.vibeRepeatMinutes !== undefined)
 		settings.vibeRepeatMinutes = parseInt(dict.vibeRepeatMinutes.value, 10) || 60;
-	if (dict.saltieApiToken !== undefined) settings.saltieApiToken = dict.saltieApiToken.value || "";
+	if (dict.goodColor !== undefined) {
+		settings.goodColor = rgbIntToClayColor(
+			dict.goodColor.value,
+			"0x00AA55"
+		);
+	}
+	if (dict.warningColor !== undefined) {
+		settings.warningColor = rgbIntToClayColor(
+			dict.warningColor.value,
+			"0xFFAA00"
+		);
+	}
+	if (dict.alarmColor !== undefined) {
+		settings.alarmColor = rgbIntToClayColor(
+			dict.alarmColor.value,
+			"0xFF0000"
+		);
+	}
+	if (dict.pollIntervalMinutes !== undefined) {
+		var pollInterval = parseInt(dict.pollIntervalMinutes.value, 10) || 5;
+		settings.pollIntervalMinutes = Math.max(1, Math.min(10, pollInterval));
+	}
 
 	saveSettings();
 

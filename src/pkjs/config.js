@@ -1,14 +1,14 @@
 module.exports = [
 	{
 		type: "heading",
-		defaultValue: "LibreLinkUp CGM Settings"
+		defaultValue: "LibreLinkUp Watchface Settings"
 	},
 	{
 		type: "section",
 		items: [
 			{
 				type: "heading",
-				defaultValue: "LibreLinkUp Credentials"
+				defaultValue: "LibreLinkUp Account"
 			},
 			{
 				type: "input",
@@ -49,7 +49,7 @@ module.exports = [
 		items: [
 			{
 				type: "heading",
-				defaultValue: "Display Settings"
+				defaultValue: "Display"
 			},
 			{
 				type: "toggle",
@@ -61,33 +61,79 @@ module.exports = [
 				type: "select",
 				messageKey: "unit",
 				label: "Glucose Units",
-				defaultValue: "mgdl",
+				defaultValue: "mmol",
 				options: [
-					{ label: "mg/dL", value: "mgdl" },
-					{ label: "mmol/L", value: "mmol" }
+					{ label: "mmol/L", value: "mmol" },
+					{ label: "mg/dL", value: "mgdl" }
 				]
 			},
 			{
 				type: "slider",
-				messageKey: "lowThreshold",
-				label: "Low Threshold",
-				defaultValue: 70,
-				min: 55,
-				max: 100,
-				step: 5
+				messageKey: "pollIntervalMinutes",
+				label: "Update Interval (minutes)",
+				defaultValue: 5,
+				min: 1,
+				max: 10,
+				step: 1
 			},
 			{
-				type: "slider",
-				messageKey: "highThreshold",
-				label: "High Threshold",
-				defaultValue: 180,
-				min: 140,
-				max: 300,
-				step: 10
+				type: "input",
+				messageKey: "lowThresholdMmol",
+				label: "Low Threshold (mmol/L)",
+				defaultValue: 3.9,
+				attributes: {
+					type: "number",
+					step: "0.1",
+					min: "2.0",
+					max: "20.0"
+				}
+			},
+			{
+				type: "input",
+				messageKey: "highThresholdMmol",
+				label: "High Threshold (mmol/L)",
+				defaultValue: 10.0,
+				attributes: {
+					type: "number",
+					step: "0.1",
+					min: "2.0",
+					max: "20.0"
+				}
 			},
 			{
 				type: "text",
-				defaultValue: "<small>Threshold lines shown on the chart</small>"
+				defaultValue: "<small>The two grey dashed chart lines always use mmol/L values, regardless of the display unit.</small>"
+			}
+		]
+	},
+	{
+		type: "section",
+		items: [
+			{
+				type: "heading",
+				defaultValue: "Chart Point Colors"
+			},
+			{
+				type: "color",
+				messageKey: "goodColor",
+				label: "Good",
+				defaultValue: "0x00AA55"
+			},
+			{
+				type: "color",
+				messageKey: "warningColor",
+				label: "Warning",
+				defaultValue: "0xFFAA00"
+			},
+			{
+				type: "color",
+				messageKey: "alarmColor",
+				label: "Alarm",
+				defaultValue: "0xFF0000"
+			},
+			{
+				type: "text",
+				defaultValue: "<small>Good = between the limits. Warning = up to 2 mmol/L outside. Alarm = further outside.</small>"
 			}
 		]
 	},
@@ -105,17 +151,20 @@ module.exports = [
 				defaultValue: false
 			},
 			{
-				type: "slider",
-				messageKey: "vibeLowSoonThreshold",
-				label: "Low Soon Threshold",
-				defaultValue: 80,
-				min: 55,
-				max: 100,
-				step: 5
+				type: "input",
+				messageKey: "vibeLowSoonThresholdMmol",
+				label: "Low Soon Threshold (mmol/L)",
+				defaultValue: 4.4,
+				attributes: {
+					type: "number",
+					step: "0.1",
+					min: "2.0",
+					max: "20.0"
+				}
 			},
 			{
 				type: "text",
-				defaultValue: "<small>Vibrate when predicted to be below this value in 20 minutes</small>"
+				defaultValue: "<small>Vibrate when predicted to be below this value in 20 minutes.</small>"
 			},
 			{
 				type: "slider",
@@ -142,17 +191,16 @@ module.exports = [
 				defaultValue: false
 			},
 			{
-				type: "slider",
-				messageKey: "vibeHighThreshold",
-				label: "High Alert Threshold",
-				defaultValue: 250,
-				min: 200,
-				max: 300,
-				step: 10
-			},
-			{
-				type: "text",
-				defaultValue: "<small>Vibrate when glucose is above this value</small>"
+				type: "input",
+				messageKey: "vibeHighThresholdMmol",
+				label: "High Alert Threshold (mmol/L)",
+				defaultValue: 13.9,
+				attributes: {
+					type: "number",
+					step: "0.1",
+					min: "2.0",
+					max: "20.0"
+				}
 			},
 			{
 				type: "slider",
@@ -171,33 +219,6 @@ module.exports = [
 				min: 15,
 				max: 120,
 				step: 15
-			},
-			{
-				type: "text",
-				defaultValue: "<small>Wait for delay before first alert, then repeat</small>"
-			}
-		]
-	},
-	{
-		type: "section",
-		items: [
-			{
-				type: "heading",
-				defaultValue: "Saltie Integration"
-			},
-			{
-				type: "input",
-				messageKey: "saltieApiToken",
-				label: "Saltie API Token",
-				attributes: {
-					placeholder: "Enter your Saltie API token",
-					autocapitalize: "off",
-					autocorrect: "off"
-				}
-			},
-			{
-				type: "text",
-				defaultValue: "<small>Optional: Enter your Saltie API token to track meals</small>"
 			}
 		]
 	},

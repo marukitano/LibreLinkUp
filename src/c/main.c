@@ -1,7 +1,7 @@
 /**
  * T1000 CGM Watchface
  *
- * A Pebble watchface for displaying Dexcom CGM data.
+ * A Pebble watchface for displaying LibreLinkUp CGM data.
  * Displays: Time, CGM value, trend arrow, delta, age, and CGM chart.
  */
 
@@ -20,9 +20,12 @@
 #define KEY_NEEDS_SETUP   9
 #define KEY_REVERSED      10
 #define KEY_SYNC_ERROR    11
-#define KEY_MEAL_DATA     12
+#define KEY_GOOD_COLOR    13
+#define KEY_WARNING_COLOR 14
+#define KEY_ALARM_COLOR   15
+#define KEY_POLL_INTERVAL 16
 
-// Trend arrow indices (Dexcom trend values)
+// Trend arrow indices
 #define TREND_NONE        0
 #define TREND_DOUBLE_UP   1
 #define TREND_UP          2
@@ -41,15 +44,12 @@
 // Chart configuration
 #define CHART_MAX_POINTS  26  // 130 minutes / 5 minutes = 26 points
 #define CHART_DOT_SPACING 8   // Pixels between dots (scaled for 200px width)
-#define CHART_Y_MIN       40
-#define CHART_Y_MAX       300
+#define CHART_Y_MIN       40   // internal mg/dL (about 2.2 mmol/L)
+#define CHART_Y_MAX       300  // internal mg/dL (about 16.7 mmol/L)
 #define CHART_DOT_RADIUS  4
-
-// Heart rate chart configuration
-#define HR_CHART_MAX_POINTS  26  // Match CGM points (5-min intervals)
-#define HR_Y_MIN             20
-#define HR_Y_MAX             160
-#define HR_SQUARE_SIZE       5   // 1px smaller than CGM dot diameter (2*4-1=7, so 5 for square)
+#define CHART_DISPLAY_HOURS 4  // 4h view: one vertical grid line per hour
+#define CHART_LEFT_GUTTER 22   // small gutter for min/max labels on the left
+#define CHART_EDGE_MARGIN 4
 
 // Display layout constants for Pebble Time 2 (200x228)
 #define SCREEN_WIDTH       200
@@ -73,8 +73,8 @@ static TextLayer *s_time_layer;
 static TextLayer *s_cgm_value_layer;
 static TextLayer *s_delta_layer;
 static TextLayer *s_time_ago_layer;
-static BitmapLayer *s_trend_layer;
-static GBitmap *s_trend_bitmap;
+static TextLayer *s_hour_label_layers[CHART_DISPLAY_HOURS];
+static Layer *s_trend_layer;
 static TextLayer *s_setup_layer;
 static TextLayer *s_no_data_layer;
 static Layer *s_loading_layer;
@@ -84,52 +84,16 @@ static AppTimer *s_loading_timer;
 static int s_battery_level = 0;
 static bool s_battery_charging = false;
 
-// Trend arrow resources (white on black for normal mode)
-static const uint32_t TREND_ICONS_WHITE[] = {
-    RESOURCE_ID_IMAGE_TREND_NONE_WHITE,
-    RESOURCE_ID_IMAGE_TREND_DOUBLE_UP_WHITE,
-    RESOURCE_ID_IMAGE_TREND_UP_WHITE,
-    RESOURCE_ID_IMAGE_TREND_UP_45_WHITE,
-    RESOURCE_ID_IMAGE_TREND_FLAT_WHITE,
-    RESOURCE_ID_IMAGE_TREND_DOWN_45_WHITE,
-    RESOURCE_ID_IMAGE_TREND_DOWN_WHITE,
-    RESOURCE_ID_IMAGE_TREND_DOUBLE_DOWN_WHITE
-};
-
-// Trend arrow resources (black on white for reversed mode)
-static const uint32_t TREND_ICONS_BLACK[] = {
-    RESOURCE_ID_IMAGE_TREND_NONE_BLACK,
-    RESOURCE_ID_IMAGE_TREND_DOUBLE_UP_BLACK,
-    RESOURCE_ID_IMAGE_TREND_UP_BLACK,
-    RESOURCE_ID_IMAGE_TREND_UP_45_BLACK,
-    RESOURCE_ID_IMAGE_TREND_FLAT_BLACK,
-    RESOURCE_ID_IMAGE_TREND_DOWN_45_BLACK,
-    RESOURCE_ID_IMAGE_TREND_DOWN_BLACK,
-    RESOURCE_ID_IMAGE_TREND_DOUBLE_DOWN_BLACK
-};
-
 // Text buffers
 static char s_time_buffer[12];
 static char s_cgm_value_buffer[8];
 static char s_delta_buffer[12];
 static char s_time_ago_buffer[24];
+static char s_hour_label_buffers[CHART_DISPLAY_HOURS][4];
 
 // Chart data
 static int16_t s_chart_values[CHART_MAX_POINTS];
-static int16_t s_chart_minutes_ago[CHART_MAX_POINTS];  // Minutes ago for each point
 static int s_chart_count = 0;
-
-// Meal data
-#define MAX_MEALS 10
-static int16_t s_meal_carbs[MAX_MEALS];
-static int16_t s_meal_minutes_ago[MAX_MEALS];
-static int s_meal_count = 0;
-
-// Heart rate data (interpolated to 5-min intervals)
-static int16_t s_hr_values[HR_CHART_MAX_POINTS];
-static int16_t s_hr_minutes_ago[HR_CHART_MAX_POINTS];
-static int s_hr_count = 0;
-static bool s_hr_available = false;
 
 // Current trend
 static uint8_t s_current_trend = TREND_NONE;
@@ -141,6 +105,14 @@ static time_t s_last_data_time = 0;   // When we last received data from phone
 // Threshold settings (defaults, updated from phone)
 static int s_low_threshold = 70;
 static int s_high_threshold = 180;
+static int s_poll_interval_minutes = 5;
+
+// Configurable chart point colors
+#ifdef PBL_COLOR
+static GColor s_good_color = GColorScreaminGreen;
+static GColor s_warning_color = GColorChromeYellow;
+static GColor s_alarm_color = GColorRed;
+#endif
 
 // Display mode (false = white on black, true = black on white)
 static bool s_reversed = false;
@@ -170,8 +142,12 @@ static AppTimer *s_loading_timeout_timer;
 
 // Forward declarations
 static void update_trend_icon(uint8_t trend);
+static void update_current_glucose_color(void);
+static void trend_layer_update_proc(Layer *layer, GContext *ctx);
 static void update_layout_for_cgm_text(const char *cgm_text);
 static void update_time_ago_display(void);
+static void update_chart_hour_labels(void);
+static void format_chart_axis_value(int mgdl, char *buffer, size_t size);
 static void loading_timer_callback(void *data);
 static void loading_timeout_callback(void *data);
 static void show_data_layers(void);
@@ -195,15 +171,18 @@ static void apply_colors() {
 
     // Update text layer colors
     text_layer_set_text_color(s_time_layer, fg_color);
-    text_layer_set_text_color(s_cgm_value_layer, fg_color);
     text_layer_set_text_color(s_delta_layer, fg_color);
     text_layer_set_text_color(s_time_ago_layer, fg_color);
     text_layer_set_text_color(s_setup_layer, fg_color);
+    for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
+        if (s_hour_label_layers[i]) {
+            text_layer_set_text_color(s_hour_label_layers[i], fg_color);
+        }
+    }
     text_layer_set_text_color(s_no_data_layer, fg_color);
 
-    // Update bitmap compositing mode and reload trend icon
-    // GCompOpOr for white-on-black icons, GCompOpAnd for black-on-white icons
-    bitmap_layer_set_compositing_mode(s_trend_layer, s_reversed ? GCompOpAnd : GCompOpOr);
+    // The glucose value and trend arrow use the current point color.
+    update_current_glucose_color();
     update_trend_icon(s_current_trend);
 
     // Mark chart layer dirty to redraw with new colors
@@ -560,8 +539,13 @@ static void show_data_layers(void) {
     // Note: CGM value, trend arrow, and delta visibility are controlled by
     // update_time_ago_display() based on data staleness, not shown unconditionally here.
     // This prevents a flash of stale data before the staleness check runs.
-    layer_set_hidden(text_layer_get_layer(s_time_ago_layer), false);
+    layer_set_hidden(text_layer_get_layer(s_time_ago_layer), true);
     layer_set_hidden(s_chart_layer, false);
+    for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
+        if (s_hour_label_layers[i]) {
+            layer_set_hidden(text_layer_get_layer(s_hour_label_layers[i]), false);
+        }
+    }
 }
 
 /**
@@ -569,10 +553,15 @@ static void show_data_layers(void) {
  */
 static void hide_data_layers(void) {
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), true);
-    layer_set_hidden(bitmap_layer_get_layer(s_trend_layer), true);
+    layer_set_hidden(s_trend_layer, true);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), true);
     layer_set_hidden(text_layer_get_layer(s_time_ago_layer), true);
     layer_set_hidden(s_chart_layer, true);
+    for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
+        if (s_hour_label_layers[i]) {
+            layer_set_hidden(text_layer_get_layer(s_hour_label_layers[i]), true);
+        }
+    }
     layer_set_hidden(text_layer_get_layer(s_no_data_layer), true);
 }
 
@@ -605,176 +594,89 @@ static void hide_loading_show_data(void) {
 }
 
 /**
- * Parse chart history data with timestamps
- * Format: "120:0,125:5,130:10,..." (value:minutesAgo pairs, most recent first)
+ * Convert the displayed glucose string back to internal mg/dL.
+ * Integer text is treated as mg/dL; decimal text is treated as mmol/L.
+ */
+static int parse_display_glucose_to_mgdl(const char *text) {
+    if (!text || !text[0] ||
+        strcmp(text, "LOW") == 0 ||
+        strcmp(text, "HIGH") == 0) {
+        return 0;
+    }
+
+    const char *dot = strchr(text, '.');
+    if (!dot) {
+        return atoi(text);
+    }
+
+    int whole = 0;
+    const char *ptr = text;
+    while (*ptr >= '0' && *ptr <= '9') {
+        whole = whole * 10 + (*ptr - '0');
+        ptr++;
+    }
+
+    int tenth = 0;
+    if (*ptr == '.' && ptr[1] >= '0' && ptr[1] <= '9') {
+        tenth = ptr[1] - '0';
+    }
+
+    int mmol_tenths = whole * 10 + tenth;
+    return (mmol_tenths * 180182 + 50000) / 100000;
+}
+
+/**
+ * Parse compact chart history.
+ * Preferred format: "120,125,130,..." (most recent first).
+ * For backwards compatibility, "120:0,125:5,..." is also accepted.
  */
 static void parse_chart_history(const char *history) {
-    if (history == NULL || strlen(history) == 0) {
-        s_chart_count = 0;
+    if (history == NULL || history[0] == '\0') {
         return;
     }
 
-    s_chart_count = 0;
+    int16_t parsed_values[CHART_MAX_POINTS];
+    int parsed_count = 0;
     const char *ptr = history;
 
-    while (*ptr && s_chart_count < CHART_MAX_POINTS) {
-        // Parse glucose value
+    while (*ptr && parsed_count < CHART_MAX_POINTS) {
         int value = 0;
+        bool has_digits = false;
+
         while (*ptr >= '0' && *ptr <= '9') {
+            has_digits = true;
             value = value * 10 + (*ptr - '0');
             ptr++;
         }
 
-        // Parse minutes ago (after colon)
-        int minutes_ago = 0;
+        // Accept the older "value:minutesAgo" format too.
         if (*ptr == ':') {
             ptr++;
             while (*ptr >= '0' && *ptr <= '9') {
-                minutes_ago = minutes_ago * 10 + (*ptr - '0');
                 ptr++;
             }
         }
 
-        if (value > 0) {
-            s_chart_values[s_chart_count] = (int16_t)value;
-            s_chart_minutes_ago[s_chart_count] = (int16_t)minutes_ago;
-            s_chart_count++;
+        if (has_digits && value > 0) {
+            parsed_values[parsed_count] = (int16_t)value;
+            parsed_count++;
         }
 
-        // Skip comma
         if (*ptr == ',') {
             ptr++;
         } else if (*ptr != '\0') {
-            break;
-        }
-    }
-}
-
-/**
- * Parse meal data with timestamps
- * Format: "35:30,42:90,..." (carbs:minutesAgo pairs)
- * minutesAgo can be negative for future meals
- */
-static void parse_meal_data(const char *meal_data) {
-    if (meal_data == NULL || strlen(meal_data) == 0) {
-        s_meal_count = 0;
-        return;
-    }
-
-    s_meal_count = 0;
-    const char *ptr = meal_data;
-
-    while (*ptr && s_meal_count < MAX_MEALS) {
-        // Parse carbs value
-        int carbs = 0;
-        while (*ptr >= '0' && *ptr <= '9') {
-            carbs = carbs * 10 + (*ptr - '0');
+            // Skip an unexpected character instead of discarding everything.
             ptr++;
         }
-
-        // Parse minutes ago (after colon), can be negative
-        int minutes_ago = 0;
-        bool is_negative = false;
-        if (*ptr == ':') {
-            ptr++;
-            if (*ptr == '-') {
-                is_negative = true;
-                ptr++;
-            }
-            while (*ptr >= '0' && *ptr <= '9') {
-                minutes_ago = minutes_ago * 10 + (*ptr - '0');
-                ptr++;
-            }
-            if (is_negative) {
-                minutes_ago = -minutes_ago;
-            }
-        }
-
-        if (carbs > 0) {
-            s_meal_carbs[s_meal_count] = (int16_t)carbs;
-            s_meal_minutes_ago[s_meal_count] = (int16_t)minutes_ago;
-            s_meal_count++;
-        }
-
-        // Skip comma
-        if (*ptr == ',') {
-            ptr++;
-        } else if (*ptr != '\0') {
-            break;
-        }
-    }
-}
-
-/**
- * Fetch heart rate data from HealthService and interpolate to 5-minute intervals
- * HR data comes in 1-minute intervals, we average values for 5-min points
- *
- * Uses heap allocation to fetch all data in one call for performance
- */
-static void fetch_heart_rate_data(void) {
-    s_hr_count = 0;
-    s_hr_available = false;
-
-#if PBL_API_EXISTS(health_service_get_minute_history)
-    time_t now = time(NULL);
-
-    // Allocate buffer on heap to avoid stack overflow
-    // HealthMinuteData is ~8 bytes, 130 records = ~1KB
-    HealthMinuteData *minute_data = malloc(130 * sizeof(HealthMinuteData));
-    if (!minute_data) {
-        APP_LOG(APP_LOG_LEVEL_ERROR, "HR: malloc failed");
-        return;
     }
 
-    // Fetch all 130 minutes in one call
-    time_t start_time = now - 130 * 60;
-    time_t end_time = now;
-    uint32_t num_records = health_service_get_minute_history(
-        minute_data, 130, &start_time, &end_time);
-
-    if (num_records == 0) {
-        free(minute_data);
-        return;
-    }
-
-    s_hr_available = true;
-
-    // Interpolate to 5-minute intervals
-    // Records are returned oldest-first, so index 0 = oldest
-    for (int slot = 0; slot < HR_CHART_MAX_POINTS && s_hr_count < HR_CHART_MAX_POINTS; slot++) {
-        int target_minutes_ago = slot * 5;  // 0, 5, 10, 15, ... 125
-
-        // Find records within ±2 minutes of target
-        int hr_sum = 0;
-        int hr_count = 0;
-        for (uint32_t i = 0; i < num_records; i++) {
-            // Record i corresponds to (num_records - 1 - i) minutes ago
-            int record_minutes_ago = (int)(num_records - 1 - i);
-
-            if (abs(record_minutes_ago - target_minutes_ago) <= 2) {
-                uint8_t bpm = minute_data[i].heart_rate_bpm;
-                // Filter out invalid values: 0 = no data, 255 = sensor error/no data
-                // Also filter physiologically impossible values (< 30 or > 220)
-                if (bpm > 30 && bpm < 220 && bpm != 255) {
-                    hr_sum += bpm;
-                    hr_count++;
-                }
-            }
+    // Only replace the visible chart when at least one valid value was parsed.
+    if (parsed_count > 0) {
+        for (int i = 0; i < parsed_count; i++) {
+            s_chart_values[i] = parsed_values[i];
         }
-
-        if (hr_count > 0) {
-            int avg_hr = hr_sum / hr_count;
-            // Sanity check: HR should be in reasonable range
-            if (avg_hr >= HR_Y_MIN && avg_hr <= HR_Y_MAX) {
-                s_hr_values[s_hr_count] = (int16_t)avg_hr;
-                s_hr_minutes_ago[s_hr_count] = (int16_t)target_minutes_ago;
-                s_hr_count++;
-            }
-        }
+        s_chart_count = parsed_count;
     }
-
-    free(minute_data);
-#endif
 }
 
 /**
@@ -783,15 +685,143 @@ static void fetch_heart_rate_data(void) {
  */
 #ifdef PBL_COLOR
 static GColor get_glucose_color(int value) {
-    if (value <= s_low_threshold) {
-        return GColorSunsetOrange;  // Light red for low
-    } else if (value >= s_high_threshold) {
-        return GColorPastelYellow;  // Light yellow for high
-    } else {
-        return GColorWhite;  // White for in-range
+    // 2 mmol/L entsprechen ungefähr 36 mg/dL
+    const int warning_range = 36;
+
+    if (value >= s_low_threshold && value <= s_high_threshold) {
+        return s_good_color;
     }
+
+    if (
+        (value < s_low_threshold &&
+         value >= s_low_threshold - warning_range) ||
+        (value > s_high_threshold &&
+         value <= s_high_threshold + warning_range)
+    ) {
+        return s_warning_color;
+    }
+
+    return s_alarm_color;
 }
 #endif
+
+/**
+ * Return the same category color used by the newest chart point.
+ */
+static GColor get_current_glucose_color(void) {
+#ifdef PBL_COLOR
+    int current_mgdl =
+        parse_display_glucose_to_mgdl(s_cgm_value_buffer);
+
+    if (current_mgdl > 0) {
+        return get_glucose_color(current_mgdl);
+    }
+#endif
+
+    return s_reversed ? GColorBlack : GColorWhite;
+}
+
+/**
+ * Apply the point color to the large glucose value and trend arrow.
+ */
+static void update_current_glucose_color(void) {
+    GColor color = get_current_glucose_color();
+
+    if (s_cgm_value_layer) {
+        text_layer_set_text_color(s_cgm_value_layer, color);
+    }
+
+    if (s_trend_layer) {
+        layer_mark_dirty(s_trend_layer);
+    }
+}
+
+/**
+ * Draw a slightly thicker line using three one-pixel lines.
+ */
+static void draw_trend_line(
+    GContext *ctx,
+    GPoint from,
+    GPoint to
+) {
+    graphics_draw_line(ctx, from, to);
+    graphics_draw_line(
+        ctx,
+        GPoint(from.x + 1, from.y),
+        GPoint(to.x + 1, to.y)
+    );
+    graphics_draw_line(
+        ctx,
+        GPoint(from.x, from.y + 1),
+        GPoint(to.x, to.y + 1)
+    );
+}
+
+/**
+ * Draw the trend arrow in the same color as the current chart point.
+ */
+static void trend_layer_update_proc(Layer *layer, GContext *ctx) {
+    (void)layer;
+
+    graphics_context_set_stroke_color(
+        ctx,
+        get_current_glucose_color()
+    );
+
+    switch (s_current_trend) {
+        case TREND_DOUBLE_UP:
+            draw_trend_line(ctx, GPoint(10, 25), GPoint(10, 7));
+            draw_trend_line(ctx, GPoint(10, 7), GPoint(6, 12));
+            draw_trend_line(ctx, GPoint(10, 7), GPoint(14, 12));
+            draw_trend_line(ctx, GPoint(20, 25), GPoint(20, 7));
+            draw_trend_line(ctx, GPoint(20, 7), GPoint(16, 12));
+            draw_trend_line(ctx, GPoint(20, 7), GPoint(24, 12));
+            break;
+
+        case TREND_UP:
+            draw_trend_line(ctx, GPoint(15, 25), GPoint(15, 5));
+            draw_trend_line(ctx, GPoint(15, 5), GPoint(9, 12));
+            draw_trend_line(ctx, GPoint(15, 5), GPoint(21, 12));
+            break;
+
+        case TREND_UP_45:
+            draw_trend_line(ctx, GPoint(6, 24), GPoint(24, 6));
+            draw_trend_line(ctx, GPoint(24, 6), GPoint(15, 6));
+            draw_trend_line(ctx, GPoint(24, 6), GPoint(24, 15));
+            break;
+
+        case TREND_FLAT:
+            draw_trend_line(ctx, GPoint(5, 15), GPoint(25, 15));
+            draw_trend_line(ctx, GPoint(25, 15), GPoint(18, 9));
+            draw_trend_line(ctx, GPoint(25, 15), GPoint(18, 21));
+            break;
+
+        case TREND_DOWN_45:
+            draw_trend_line(ctx, GPoint(6, 6), GPoint(24, 24));
+            draw_trend_line(ctx, GPoint(24, 24), GPoint(15, 24));
+            draw_trend_line(ctx, GPoint(24, 24), GPoint(24, 15));
+            break;
+
+        case TREND_DOWN:
+            draw_trend_line(ctx, GPoint(15, 5), GPoint(15, 25));
+            draw_trend_line(ctx, GPoint(15, 25), GPoint(9, 18));
+            draw_trend_line(ctx, GPoint(15, 25), GPoint(21, 18));
+            break;
+
+        case TREND_DOUBLE_DOWN:
+            draw_trend_line(ctx, GPoint(10, 5), GPoint(10, 23));
+            draw_trend_line(ctx, GPoint(10, 23), GPoint(6, 18));
+            draw_trend_line(ctx, GPoint(10, 23), GPoint(14, 18));
+            draw_trend_line(ctx, GPoint(20, 5), GPoint(20, 23));
+            draw_trend_line(ctx, GPoint(20, 23), GPoint(16, 18));
+            draw_trend_line(ctx, GPoint(20, 23), GPoint(24, 18));
+            break;
+
+        case TREND_NONE:
+        default:
+            break;
+    }
+}
 
 /**
  * Draw the horizontal divider line with 50% dot pattern
@@ -809,350 +839,204 @@ static void divider_layer_update_proc(Layer *layer, GContext *ctx) {
  */
 static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     GRect bounds = layer_get_bounds(layer);
-
-    // Set colors based on reversed mode
     GColor bg_color = s_reversed ? GColorWhite : GColorBlack;
-    GColor fg_color = s_reversed ? GColorBlack : GColorWhite;
 
-    // Draw background
     graphics_context_set_fill_color(ctx, bg_color);
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
-    if (s_chart_count == 0) {
-        return;
-    }
-
-    // Calculate chart dimensions with margins
-    int margin = 4;
+    int margin = CHART_EDGE_MARGIN;
     int chart_height = bounds.size.h - (margin * 2);
-
-    // Map thresholds to Y coordinates
-    int low_y = bounds.origin.y + margin + chart_height -
-                ((s_low_threshold - CHART_Y_MIN) * chart_height / (CHART_Y_MAX - CHART_Y_MIN));
-    int high_y = bounds.origin.y + margin + chart_height -
-                 ((s_high_threshold - CHART_Y_MIN) * chart_height / (CHART_Y_MAX - CHART_Y_MIN));
-
-    // Draw colored background zones (full width, from x=0 to right edge)
-    int chart_left = bounds.origin.x + margin;
+    int chart_left = bounds.origin.x + CHART_LEFT_GUTTER + margin;
     int chart_right = bounds.origin.x + bounds.size.w - margin;
-    int chart_top = bounds.origin.y + margin;
-    int chart_bottom = bounds.origin.y + margin + chart_height;
-    int full_width = bounds.size.w;
+    int label_x = bounds.origin.x + 1;
 
-#ifdef PBL_COLOR
-    int fill_width = full_width - 2;  // End 2px from right edge
+    // Use history when present. Otherwise derive one point directly from the
+    // glucose value that is already visible on the watchface.
+    int local_count = s_chart_count;
+    int16_t current_fallback = 0;
+    const int16_t *values = s_chart_values;
 
-    // Dark red zone: 40 (min) to low threshold
-    graphics_context_set_fill_color(ctx, GColorDarkCandyAppleRed);
-    graphics_fill_rect(ctx, GRect(0, low_y, fill_width, chart_bottom - low_y), 0, GCornerNone);
+    if (local_count <= 0) {
+        int current_mgdl =
+            parse_display_glucose_to_mgdl(s_cgm_value_buffer);
 
-    // Dark green zone: low threshold to high threshold (in-range)
-    graphics_context_set_fill_color(ctx, GColorDarkGreen);
-    graphics_fill_rect(ctx, GRect(0, high_y, fill_width, low_y - high_y), 0, GCornerNone);
-
-    // Dark yellow zone: high threshold to max
-    graphics_context_set_fill_color(ctx, GColorArmyGreen);  // Dark yellow/olive
-    graphics_fill_rect(ctx, GRect(0, chart_top, fill_width, high_y - chart_top), 0, GCornerNone);
-
-    // 50% black dot pattern overlay (checkerboard)
-    graphics_context_set_fill_color(ctx, GColorBlack);
-    for (int y = chart_top; y < chart_bottom; y++) {
-        for (int x = (y % 2); x < fill_width; x += 2) {
-            graphics_draw_pixel(ctx, GPoint(x, y));
+        if (current_mgdl > 0) {
+            current_fallback = (int16_t)current_mgdl;
+            values = &current_fallback;
+            local_count = 1;
         }
     }
 
-    // Black dividing lines between zones
-    graphics_context_set_stroke_color(ctx, GColorBlack);
-    graphics_draw_line(ctx, GPoint(0, low_y), GPoint(fill_width, low_y));
-    graphics_draw_line(ctx, GPoint(0, high_y), GPoint(fill_width, high_y));
+    // Draw the vertical time grid even when there is no data yet.
+#ifdef PBL_COLOR
+    GColor grid_color = GColorDarkGray;
+    graphics_context_set_stroke_color(ctx, grid_color);
+    graphics_context_set_text_color(ctx, GColorLightGray);
 #else
-    // Monochrome platforms: draw dashed threshold lines instead
-    int dash_length = 4;
-    int gap_length = 3;
-    graphics_context_set_stroke_color(ctx, fg_color);
-    for (int x = chart_left; x < chart_right; x += dash_length + gap_length) {
-        int end_x = x + dash_length - 1;
-        if (end_x > chart_right) end_x = chart_right;
-        graphics_draw_line(ctx, GPoint(x, low_y), GPoint(end_x, low_y));
-        graphics_draw_line(ctx, GPoint(x, high_y), GPoint(end_x, high_y));
-    }
+    GColor line_color = s_reversed ? GColorBlack : GColorWhite;
+    graphics_context_set_stroke_color(ctx, line_color);
+    graphics_context_set_text_color(ctx, line_color);
 #endif
 
-    // Calculate elapsed time since data was received to adjust positions
-    int elapsed_minutes = 0;
-    if (s_last_data_time > 0) {
-        time_t now = time(NULL);
-        elapsed_minutes = (int)((now - s_last_data_time) / 60);
-    }
+    time_t now = time(NULL);
+    struct tm *tick_time = localtime(&now);
+    int current_minute = tick_time->tm_min;
+    int chart_width = chart_right - chart_left;
 
-    // Draw heart rate as connected line if available
-    // Draw these first so CGM dots appear on top
-    if (s_hr_available && s_hr_count > 0) {
-        graphics_context_set_stroke_color(ctx, GColorPurpureus);
-        graphics_context_set_stroke_width(ctx, 2);
+    // Rolling full-hour grid. At 14:37, for example, the 14:00 marker sits
+    // 37 minutes left of the right edge, then 13:00, 12:00 and 11:00 follow.
+    for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
+        int minutes_ago = current_minute + (i * 60);
 
-        int prev_x = -1, prev_y = -1;
-
-        for (int i = 0; i < s_hr_count; i++) {
-            int hr_value = s_hr_values[i];
-
-            // Clamp to HR range
-            if (hr_value < HR_Y_MIN) hr_value = HR_Y_MIN;
-            if (hr_value > HR_Y_MAX) hr_value = HR_Y_MAX;
-
-            // Draw heart-rate points with the same even spacing as CGM points.
-            // Oldest point stays at the left, newest at the right.
-            int x;
-            if (s_hr_count <= 1) {
-                x = chart_right;
-            } else {
-                int display_index = s_hr_count - 1 - i;
-                x = chart_left + (display_index * (chart_right - chart_left)) / (s_hr_count - 1);
-            }
-
-            // Calculate Y position using HR scale (separate from CGM scale)
-            int y = bounds.origin.y + margin + chart_height -
-                    ((hr_value - HR_Y_MIN) * chart_height / (HR_Y_MAX - HR_Y_MIN));
-
-            // Draw connecting line to previous point
-            if (prev_x >= 0) {
-                graphics_draw_line(ctx, GPoint(prev_x, prev_y), GPoint(x, y));
-            }
-
-            // Draw filled circle at data point
-            graphics_context_set_fill_color(ctx, GColorPurpureus);
-            graphics_fill_circle(ctx, GPoint(x, y), 2);
-
-            prev_x = x;
-            prev_y = y;
-        }
-    }
-
-    // Draw dots for each data point
-    // Data comes in most-recent-first, so we still plot newest on the right.
-    // Unlike before, points are spaced evenly to avoid large visual gaps.
-
-    for (int i = 0; i < s_chart_count; i++) {
-        int value = s_chart_values[i];
-        int original_value = value;  // Keep original for color determination
-
-        // Clamp value to chart range
-        if (value < CHART_Y_MIN) value = CHART_Y_MIN;
-        if (value > CHART_Y_MAX) value = CHART_Y_MAX;
-
-        // Calculate X position using equal spacing.
-        // Oldest reading is on the left, newest on the right.
-        int total_minutes_ago = s_chart_minutes_ago[i] + elapsed_minutes;
-        int x;
-        if (s_chart_count <= 1) {
-            x = chart_right;
-        } else {
-            int display_index = s_chart_count - 1 - i;
-            x = chart_left + (display_index * (chart_right - chart_left)) / (s_chart_count - 1);
-        }
-
-        // Calculate Y position (invert because screen Y increases downward)
-        int y = bounds.origin.y + margin + chart_height -
-                ((value - CHART_Y_MIN) * chart_height / (CHART_Y_MAX - CHART_Y_MIN));
-
-        // Set dot color based on platform
-#ifdef PBL_COLOR
-        graphics_context_set_fill_color(ctx, get_glucose_color(original_value));
-#else
-        graphics_context_set_fill_color(ctx, fg_color);
-#endif
-
-        // Draw circle for each point
-        // Most recent dot (i=0) is drawn as a 2px border (no fill) if within 10 minutes
-        // Others are filled circles 1px smaller
-        if (i == 0 && total_minutes_ago < 10) {
-            // Current reading: draw as hollow circle with 2px border
-#ifdef PBL_COLOR
-            graphics_context_set_stroke_color(ctx, get_glucose_color(original_value));
-#else
-            graphics_context_set_stroke_color(ctx, fg_color);
-#endif
-            graphics_context_set_stroke_width(ctx, 2);
-            graphics_draw_circle(ctx, GPoint(x, y), CHART_DOT_RADIUS);
-        } else {
-            // Historical readings: filled circles
-            graphics_fill_circle(ctx, GPoint(x, y), CHART_DOT_RADIUS - 1);
-        }
-    }
-
-    // Draw meal markers
-    // Use the same font as time ago layer: GOTHIC_24_BOLD
-    GFont meal_font = fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD);
-
-    for (int i = 0; i < s_meal_count; i++) {
-        int carbs = s_meal_carbs[i];
-        int total_minutes_ago = s_meal_minutes_ago[i] + elapsed_minutes;
-        bool is_future = total_minutes_ago < 0;
-
-        // Calculate X position (same as CGM dots)
-        int pixel_offset = (total_minutes_ago * CHART_DOT_SPACING) / 5;
-        int meal_x = bounds.origin.x + bounds.size.w - margin - 2 - pixel_offset;
-        int text_y_offset = -6;
-
-        // For future meals (within next 20 minutes), position at right edge
-        // Shift left to leave room for right-pointing arrow
-        if (is_future) {
-            meal_x = bounds.origin.x + bounds.size.w - margin - 12;
-        }
-
-        // Skip meals that have scrolled off the left edge
-        if (!is_future && meal_x < bounds.origin.x + margin) {
+        if (
+            minutes_ago <= 0 ||
+            minutes_ago >= (CHART_DISPLAY_HOURS * 60)
+        ) {
             continue;
         }
 
-        // Format carbs as string
-        char carbs_text[8];
-        snprintf(carbs_text, sizeof(carbs_text), "%d", carbs);
+        int x = chart_right -
+                (minutes_ago * chart_width) /
+                (CHART_DISPLAY_HOURS * 60);
 
-        // Calculate text size
-        GSize text_size = graphics_text_layout_get_content_size(
-            carbs_text,
-            meal_font,
-            GRect(0, 0, 100, 30),
-            GTextOverflowModeTrailingEllipsis,
-            GTextAlignmentLeft
-        );
-
-        // Find the CGM value at this time (or most recent if future)
-        int reference_value = 140; // Default to middle value
-        if (s_chart_count > 0) {
-            if (is_future || total_minutes_ago <= 0) {
-                // Use most recent CGM value for future meals
-                reference_value = s_chart_values[0];
-            } else {
-                // Find the closest CGM reading to this meal time
-                int min_time_diff = 999;
-                for (int j = 0; j < s_chart_count; j++) {
-                    int cgm_time = s_chart_minutes_ago[j] + elapsed_minutes;
-                    int time_diff = abs(cgm_time - total_minutes_ago);
-                    if (time_diff < min_time_diff) {
-                        min_time_diff = time_diff;
-                        reference_value = s_chart_values[j];
-                    }
-                }
-            }
-        }
-
-        // Clamp reference value to chart range for Y calculation
-        int clamped_value = reference_value;
-        if (clamped_value < CHART_Y_MIN) clamped_value = CHART_Y_MIN;
-        if (clamped_value > CHART_Y_MAX) clamped_value = CHART_Y_MAX;
-
-        // Calculate the Y position of the CGM data point
-        int cgm_y = bounds.origin.y + margin + chart_height -
-                    ((clamped_value - CHART_Y_MIN) * chart_height / (CHART_Y_MAX - CHART_Y_MIN));
-
-        // Position above if CGM is below 180, below if CGM is above 180
-        bool show_above = reference_value < 180;
-        int padding_x = 3;
-
-        // Constrain meal_x to keep box within visible bounds
-        // Box extends text_size.w/2 + padding_x in each direction
-        int half_box_width = text_size.w / 2 + padding_x;
-        int arrow_space = is_future ? 6 : 0;  // Extra space for right arrow on future meals
-        int min_x = bounds.origin.x + margin + half_box_width;
-        int max_x = bounds.origin.x + bounds.size.w - margin - half_box_width - arrow_space;
-
-        if (meal_x < min_x) {
-            meal_x = min_x;
-        } else if (meal_x > max_x) {
-            meal_x = max_x;
-        }
-        int box_height = 21;
-        int triangle_size = 4;
-        int gap_from_cgm = 6;  // Space between triangle tip and CGM point
-
-        int box_y;
-        if (show_above) {
-            // Position above the CGM point
-            box_y = cgm_y - box_height - triangle_size - gap_from_cgm;
-            // Don't go above chart bounds
-            if (box_y < bounds.origin.y + margin) {
-                box_y = bounds.origin.y + margin;
-            }
-        } else {
-            // Position below the CGM point
-            box_y = cgm_y + triangle_size + gap_from_cgm;
-            // Don't go below chart bounds
-            if (box_y + box_height > bounds.origin.y + bounds.size.h - margin) {
-                box_y = bounds.origin.y + bounds.size.h - margin - box_height;
-            }
-        }
-
-        // Draw rounded rectangle background (reversed colors)
-        GRect bg_rect = GRect(
-            meal_x - text_size.w / 2 - padding_x,
-            box_y,
-            text_size.w + padding_x * 2,
-            box_height
-        );
-
-        graphics_context_set_fill_color(ctx, fg_color);
-        graphics_fill_rect(ctx, bg_rect, 3, GCornersAll);
-
-        // Draw triangular pointer pointing to CGM data (only for past meals)
-        if (!is_future) {
-            int triangle_x = meal_x; // Center of meal badge
-            GPoint triangle_points[3];
-
-            if (show_above) {
-                // Triangle pointing down from bottom of badge
-                int triangle_y = bg_rect.origin.y + bg_rect.size.h;
-                triangle_points[0] = GPoint(triangle_x, triangle_y + triangle_size);
-                triangle_points[1] = GPoint(triangle_x - triangle_size, triangle_y);
-                triangle_points[2] = GPoint(triangle_x + triangle_size, triangle_y);
-            } else {
-                // Triangle pointing up from top of badge
-                int triangle_y = bg_rect.origin.y;
-                triangle_points[0] = GPoint(triangle_x, triangle_y - triangle_size);
-                triangle_points[1] = GPoint(triangle_x - triangle_size, triangle_y);
-                triangle_points[2] = GPoint(triangle_x + triangle_size, triangle_y);
-            }
-
-            GPathInfo triangle_info = {
-                .num_points = 3,
-                .points = triangle_points
-            };
-            GPath *triangle = gpath_create(&triangle_info);
-            gpath_draw_filled(ctx, triangle);
-            gpath_destroy(triangle);
-        }
-
-        // For future meals, draw right-pointing arrow
-        if (is_future) {
-            int arrow_y = box_y + box_height / 2;
-            int arrow_x = bg_rect.origin.x + bg_rect.size.w - 1;
-
-            GPoint arrow_points[3];
-            arrow_points[0] = GPoint(arrow_x + 5, arrow_y);
-            arrow_points[1] = GPoint(arrow_x, arrow_y - 4);
-            arrow_points[2] = GPoint(arrow_x, arrow_y + 5);
-
-            GPathInfo arrow_info = {
-                .num_points = 3,
-                .points = arrow_points
-            };
-            GPath *arrow = gpath_create(&arrow_info);
-            gpath_draw_filled(ctx, arrow);
-            gpath_destroy(arrow);
-        }
-
-        // Draw text (reversed color) - centered in box
-        graphics_context_set_text_color(ctx, bg_color);
-        graphics_draw_text(
+        graphics_draw_line(
             ctx,
-            carbs_text,
-            meal_font,
-            GRect(meal_x - text_size.w / 2, box_y + text_y_offset, text_size.w, box_height),
-            GTextOverflowModeTrailingEllipsis,
-            GTextAlignmentLeft,
-            NULL
+            GPoint(x, bounds.origin.y + margin),
+            GPoint(x, bounds.origin.y + margin + chart_height)
+        );
+    }
+
+    if (local_count <= 0) {
+        return;
+    }
+
+    int raw_min = values[0];
+    int raw_max = values[0];
+
+    for (int i = 1; i < local_count; i++) {
+        if (values[i] < raw_min) raw_min = values[i];
+        if (values[i] > raw_max) raw_max = values[i];
+    }
+
+    // Dynamic scaling: use the full available height.
+    // Add a little padding and enforce a minimum span so tiny differences
+    // do not look huge.
+    const int padding = 10;      // about 0.6 mmol/L
+    const int min_span = 36;     // 2.0 mmol/L
+
+    int plot_min = raw_min - padding;
+    int plot_max = raw_max + padding;
+
+    if (plot_max - plot_min < min_span) {
+        int mid = (plot_min + plot_max) / 2;
+        plot_min = mid - (min_span / 2);
+        plot_max = mid + (min_span / 2);
+    }
+
+    if (plot_min < 1) {
+        plot_min = 1;
+    }
+    if (plot_max <= plot_min) {
+        plot_max = plot_min + min_span;
+    }
+
+    // Draw the small min/max labels on the left.
+    char min_buffer[8];
+    char max_buffer[8];
+    format_chart_axis_value(raw_min, min_buffer, sizeof(min_buffer));
+    format_chart_axis_value(raw_max, max_buffer, sizeof(max_buffer));
+
+    graphics_draw_text(
+        ctx,
+        max_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_14),
+        GRect(label_x, bounds.origin.y + margin - 2, CHART_LEFT_GUTTER - 2, 16),
+        GTextOverflowModeTrailingEllipsis,
+        GTextAlignmentLeft,
+        NULL
+    );
+    graphics_draw_text(
+        ctx,
+        min_buffer,
+        fonts_get_system_font(FONT_KEY_GOTHIC_14),
+        GRect(label_x, bounds.origin.y + margin + chart_height - 12, CHART_LEFT_GUTTER - 2, 16),
+        GTextOverflowModeTrailingEllipsis,
+        GTextAlignmentLeft,
+        NULL
+    );
+
+    // Draw low/high threshold lines only when they fall within the visible
+    // dynamic chart range.
+    int dash_length = 6;
+    int gap_length = 4;
+
+#ifdef PBL_COLOR
+    graphics_context_set_stroke_color(ctx, GColorLightGray);
+#else
+    graphics_context_set_stroke_color(ctx, line_color);
+#endif
+
+    if (s_low_threshold >= plot_min && s_low_threshold <= plot_max) {
+        int low_y = bounds.origin.y + margin + chart_height -
+                    ((s_low_threshold - plot_min) * chart_height /
+                     (plot_max - plot_min));
+
+        for (int x = chart_left; x < chart_right;
+             x += dash_length + gap_length) {
+            int end_x = x + dash_length - 1;
+            if (end_x > chart_right) end_x = chart_right;
+            graphics_draw_line(ctx, GPoint(x, low_y), GPoint(end_x, low_y));
+        }
+    }
+
+    if (s_high_threshold >= plot_min && s_high_threshold <= plot_max) {
+        int high_y = bounds.origin.y + margin + chart_height -
+                     ((s_high_threshold - plot_min) * chart_height /
+                      (plot_max - plot_min));
+
+        for (int x = chart_left; x < chart_right;
+             x += dash_length + gap_length) {
+            int end_x = x + dash_length - 1;
+            if (end_x > chart_right) end_x = chart_right;
+            graphics_draw_line(ctx, GPoint(x, high_y), GPoint(end_x, high_y));
+        }
+    }
+
+    for (int i = 0; i < local_count; i++) {
+        int original_value = values[i];
+        int clamped_value = original_value;
+
+        if (clamped_value < plot_min) clamped_value = plot_min;
+        if (clamped_value > plot_max) clamped_value = plot_max;
+
+        int x;
+        if (local_count == 1) {
+            x = chart_right - CHART_DOT_RADIUS;
+        } else {
+            int display_index = local_count - 1 - i;
+            x = chart_left +
+                (display_index * (chart_right - chart_left)) /
+                (local_count - 1);
+        }
+
+        int y = bounds.origin.y + margin + chart_height -
+                ((clamped_value - plot_min) * chart_height /
+                 (plot_max - plot_min));
+
+#ifdef PBL_COLOR
+        graphics_context_set_fill_color(
+            ctx,
+            get_glucose_color(original_value)
+        );
+#else
+        GColor dot_color = s_reversed ? GColorBlack : GColorWhite;
+        graphics_context_set_fill_color(ctx, dot_color);
+#endif
+
+        graphics_fill_circle(
+            ctx,
+            GPoint(x, y),
+            CHART_DOT_RADIUS - 1
         );
     }
 }
@@ -1161,9 +1045,8 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
  * Update the trend arrow icon
  */
 static void update_trend_icon(uint8_t trend) {
-    // Special value to hide the trend icon entirely
     if (trend == TREND_HIDE) {
-        layer_set_hidden(bitmap_layer_get_layer(s_trend_layer), true);
+        layer_set_hidden(s_trend_layer, true);
         return;
     }
 
@@ -1171,20 +1054,27 @@ static void update_trend_icon(uint8_t trend) {
         trend = TREND_NONE;
     }
 
-    // Ensure trend layer is visible (may have been hidden by TREND_HIDE)
-    layer_set_hidden(bitmap_layer_get_layer(s_trend_layer), false);
-
     s_current_trend = trend;
+    layer_set_hidden(s_trend_layer, false);
+    layer_mark_dirty(s_trend_layer);
+}
 
-    // Destroy old bitmap if exists
-    if (s_trend_bitmap) {
-        gbitmap_destroy(s_trend_bitmap);
+
+/**
+ * Format a small chart axis value using the same style as the visible CGM value.
+ * If the main value shows a decimal point, we assume mmol/L. Otherwise mg/dL.
+ */
+static void format_chart_axis_value(int mgdl, char *buffer, size_t size) {
+    if (!buffer || size == 0) {
+        return;
     }
 
-    // Load new bitmap based on reversed mode
-    const uint32_t *icons = s_reversed ? TREND_ICONS_BLACK : TREND_ICONS_WHITE;
-    s_trend_bitmap = gbitmap_create_with_resource(icons[trend]);
-    bitmap_layer_set_bitmap(s_trend_layer, s_trend_bitmap);
+    if (strchr(s_cgm_value_buffer, '.') != NULL) {
+        int mmol_tenths = (mgdl * 100000 + 90091) / 180182;
+        snprintf(buffer, size, "%d.%d", mmol_tenths / 10, mmol_tenths % 10);
+    } else {
+        snprintf(buffer, size, "%d", mgdl);
+    }
 }
 
 /**
@@ -1196,7 +1086,7 @@ static void update_layout_for_cgm_text(const char *cgm_text) {
 
     // Show CGM value and trend layers (hidden on startup until data arrives)
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), false);
-    layer_set_hidden(bitmap_layer_get_layer(s_trend_layer), false);
+    layer_set_hidden(s_trend_layer, false);
 
     // Check if this is a LOW or HIGH value - hide delta in these cases
     bool hide_delta = (strcmp(cgm_text, "LOW") == 0 || strcmp(cgm_text, "HIGH") == 0);
@@ -1241,13 +1131,88 @@ static void update_layout_for_cgm_text(const char *cgm_text) {
 
     // Position trend arrow after CGM text
     int trend_x = start_x + cgm_size.w + gap;
-    layer_set_frame(bitmap_layer_get_layer(s_trend_layer),
+    layer_set_frame(s_trend_layer,
                     GRect(trend_x, CGM_ROW_Y + 12, 30, 30));
 
     // Position delta after trend
     int delta_x = trend_x + trend_width + gap;
     layer_set_frame(text_layer_get_layer(s_delta_layer),
                     GRect(delta_x, CGM_ROW_Y + CGM_DELTA_Y_OFFSET, 60, 32));
+}
+
+/**
+ * Update the hour labels shown below the vertical grid lines.
+ * For the 4h view, the three inner grid lines are labeled with the
+ * previous full hours, for example 6, 7, 8 when the current hour is 9.
+ */
+static void update_chart_hour_labels(void) {
+    time_t now = time(NULL);
+    struct tm *tick_time = localtime(&now);
+
+    int current_hour = tick_time->tm_hour;
+    int current_minute = tick_time->tm_min;
+    int chart_left = CHART_LEFT_GUTTER + CHART_EDGE_MARGIN;
+    int chart_right = SCREEN_WIDTH - CHART_EDGE_MARGIN;
+    int chart_width = chart_right - chart_left;
+    int label_width = 30;
+
+    // In a rolling 4-hour window, the newest full-hour marker is
+    // current_minute minutes behind the right edge. Older markers follow
+    // at exact one-hour intervals and therefore move smoothly left.
+    int newest_hour_offset_minutes = current_minute;
+
+    for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
+        int minutes_ago =
+            newest_hour_offset_minutes + (i * 60);
+
+        bool visible =
+            minutes_ago > 0 &&
+            minutes_ago < (CHART_DISPLAY_HOURS * 60);
+
+        layer_set_hidden(
+            text_layer_get_layer(s_hour_label_layers[i]),
+            !visible
+        );
+
+        if (!visible) {
+            continue;
+        }
+
+        int hour_value = (current_hour - i + 24) % 24;
+
+        if (!clock_is_24h_style()) {
+            if (hour_value == 0) {
+                hour_value = 12;
+            } else if (hour_value > 12) {
+                hour_value -= 12;
+            }
+        }
+
+        snprintf(
+            s_hour_label_buffers[i],
+            sizeof(s_hour_label_buffers[i]),
+            "%d",
+            hour_value
+        );
+        text_layer_set_text(
+            s_hour_label_layers[i],
+            s_hour_label_buffers[i]
+        );
+
+        int x = chart_right -
+                (minutes_ago * chart_width) /
+                (CHART_DISPLAY_HOURS * 60);
+
+        layer_set_frame(
+            text_layer_get_layer(s_hour_label_layers[i]),
+            GRect(
+                x - (label_width / 2),
+                BOTTOM_ROW_Y,
+                label_width,
+                24
+            )
+        );
+    }
 }
 
 /**
@@ -1270,21 +1235,13 @@ static void update_time_ago_display() {
 
     // Show/hide CGM value, trend arrow, and delta based on staleness
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), is_stale);
-    layer_set_hidden(bitmap_layer_get_layer(s_trend_layer), is_stale);
+    layer_set_hidden(s_trend_layer, is_stale);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), is_stale);
     layer_set_hidden(text_layer_get_layer(s_no_data_layer), !is_stale);
 
-    // Update display
-    if (current_minutes_ago == 0) {
-        snprintf(s_time_ago_buffer, sizeof(s_time_ago_buffer), "now");
-    } else if (current_minutes_ago >= 90) {
-        int hours = current_minutes_ago / 60;
-        int mins = current_minutes_ago % 60;
-        snprintf(s_time_ago_buffer, sizeof(s_time_ago_buffer), "%dh %dm ago", hours, mins);
-    } else {
-        snprintf(s_time_ago_buffer, sizeof(s_time_ago_buffer), "%dm ago", current_minutes_ago);
-    }
-    text_layer_set_text(s_time_ago_layer, s_time_ago_buffer);
+    // The bottom-right "time ago" text has been removed.
+    text_layer_set_text(s_time_ago_layer, "");
+    layer_set_hidden(text_layer_get_layer(s_time_ago_layer), true);
 
     // Update alert visibility based on staleness
     update_alert_visibility();
@@ -1311,6 +1268,7 @@ static void update_time() {
     // Set time text
     snprintf(s_time_buffer, sizeof(s_time_buffer), "%s", time_ptr);
     text_layer_set_text(s_time_layer, s_time_buffer);
+    update_chart_hour_labels();
 
 }
 
@@ -1321,22 +1279,18 @@ static void tick_handler(struct tm *tick_time, TimeUnits units_changed) {
     update_time();
     update_time_ago_display();
 
-    // Redraw chart to shift dots based on elapsed time
-    // Refresh heart rate data every minute (cheap operation, keeps HR current)
+    // Redraw chart once per minute so age-dependent elements stay current.
     if (s_chart_layer) {
-        fetch_heart_rate_data();
         layer_mark_dirty(s_chart_layer);
     }
 
-    // Only request data from phone if CGM reading is 4+ minutes old
-    // (Dexcom only updates every 5 minutes, so no point asking more frequently)
+    // Request new data only when the configured interval has elapsed.
     if (s_last_data_time > 0 && s_last_minutes_ago >= 0) {
         time_t now = time(NULL);
         int elapsed_minutes = (int)((now - s_last_data_time) / 60);
         int current_cgm_age = s_last_minutes_ago + elapsed_minutes;
 
-        if (current_cgm_age < 4) {
-            // Data is still fresh, no need to request update
+        if (current_cgm_age < s_poll_interval_minutes) {
             return;
         }
     }
@@ -1396,6 +1350,22 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
         snprintf(s_cgm_value_buffer, sizeof(s_cgm_value_buffer), "%s", cgm_value_tuple->value->cstring);
         text_layer_set_text(s_cgm_value_layer, s_cgm_value_buffer);
         update_layout_for_cgm_text(s_cgm_value_buffer);
+        update_current_glucose_color();
+
+        // A visible glucose value must always make the chart layer visible.
+        layer_set_hidden(s_chart_layer, false);
+
+        // Always provide at least the newest diagram point.
+        // A history tuple in this same message replaces this one-point fallback.
+        int current_mgdl = parse_display_glucose_to_mgdl(s_cgm_value_buffer);
+        if (current_mgdl > 0) {
+            s_chart_values[0] = (int16_t)current_mgdl;
+            s_chart_count = 1;
+            APP_LOG(APP_LOG_LEVEL_INFO,
+                    "Current diagram fallback: %d mg/dL",
+                    current_mgdl);
+            layer_mark_dirty(s_chart_layer);
+        }
     }
 
     // Read trend
@@ -1420,18 +1390,14 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     // Read chart history
     Tuple *history_tuple = dict_find(iterator, KEY_CGM_HISTORY);
     if (history_tuple) {
+        APP_LOG(APP_LOG_LEVEL_INFO, "Chart history tuple length: %d", history_tuple->length);
         parse_chart_history(history_tuple->value->cstring);
-        // Fetch latest heart rate data to overlay on chart
-        fetch_heart_rate_data();
+        APP_LOG(APP_LOG_LEVEL_INFO, "Chart history received: %d points", s_chart_count);
         layer_mark_dirty(s_chart_layer);
+    } else {
+        APP_LOG(APP_LOG_LEVEL_WARNING, "No chart history in received message");
     }
 
-    // Read meal data
-    Tuple *meal_data_tuple = dict_find(iterator, KEY_MEAL_DATA);
-    if (meal_data_tuple) {
-        parse_meal_data(meal_data_tuple->value->cstring);
-        layer_mark_dirty(s_chart_layer);
-    }
 
     // Read threshold settings
     Tuple *low_threshold_tuple = dict_find(iterator, KEY_LOW_THRESHOLD);
@@ -1444,6 +1410,47 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     if (high_threshold_tuple) {
         s_high_threshold = high_threshold_tuple->value->int32;
         layer_mark_dirty(s_chart_layer);
+    }
+
+#ifdef PBL_COLOR
+    // Convert configuration RGB values to real opaque Pebble colors.
+    Tuple *good_color_tuple = dict_find(iterator, KEY_GOOD_COLOR);
+    if (good_color_tuple) {
+        GColor color = GColorFromHEX(good_color_tuple->value->int32);
+        if (color.a != 0) {
+            s_good_color = color;
+        }
+        layer_mark_dirty(s_chart_layer);
+    }
+
+    Tuple *warning_color_tuple = dict_find(iterator, KEY_WARNING_COLOR);
+    if (warning_color_tuple) {
+        GColor color = GColorFromHEX(warning_color_tuple->value->int32);
+        if (color.a != 0) {
+            s_warning_color = color;
+        }
+        layer_mark_dirty(s_chart_layer);
+    }
+
+    Tuple *alarm_color_tuple = dict_find(iterator, KEY_ALARM_COLOR);
+    if (alarm_color_tuple) {
+        GColor color = GColorFromHEX(alarm_color_tuple->value->int32);
+        if (color.a != 0) {
+            s_alarm_color = color;
+        }
+        layer_mark_dirty(s_chart_layer);
+    }
+#endif
+
+    // Thresholds and configured colors may have changed.
+    update_current_glucose_color();
+
+    Tuple *poll_interval_tuple = dict_find(iterator, KEY_POLL_INTERVAL);
+    if (poll_interval_tuple) {
+        int interval = poll_interval_tuple->value->int32;
+        if (interval < 1) interval = 1;
+        if (interval > 10) interval = 10;
+        s_poll_interval_minutes = interval;
     }
 
     // Handle alert vibration
@@ -1598,16 +1605,12 @@ static void main_window_load(Window *window) {
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), true);
     layer_add_child(window_layer, text_layer_get_layer(s_cgm_value_layer));
 
-    // Trend arrow (position updated dynamically)
-    // Hidden initially until data arrives
-    s_trend_layer = bitmap_layer_create(GRect(108, CGM_ROW_Y + 12, 30, 30));
-    bitmap_layer_set_compositing_mode(s_trend_layer, GCompOpOr);
-    bitmap_layer_set_alignment(s_trend_layer, GAlignCenter);
-    const uint32_t *icons = s_reversed ? TREND_ICONS_BLACK : TREND_ICONS_WHITE;
-    s_trend_bitmap = gbitmap_create_with_resource(icons[TREND_NONE]);
-    bitmap_layer_set_bitmap(s_trend_layer, s_trend_bitmap);
-    layer_set_hidden(bitmap_layer_get_layer(s_trend_layer), true);
-    layer_add_child(window_layer, bitmap_layer_get_layer(s_trend_layer));
+    // Vector trend arrow (position updated dynamically)
+    // Drawing it ourselves allows the configured glucose color.
+    s_trend_layer = layer_create(GRect(108, CGM_ROW_Y + 12, 30, 30));
+    layer_set_update_proc(s_trend_layer, trend_layer_update_proc);
+    layer_set_hidden(s_trend_layer, true);
+    layer_add_child(window_layer, s_trend_layer);
 
     // Delta layer (position updated dynamically)
     // Hidden initially until data arrives
@@ -1641,8 +1644,21 @@ static void main_window_load(Window *window) {
         fonts_get_system_font(FONT_KEY_GOTHIC_24_BOLD),
         GTextAlignmentRight
     );
-    text_layer_set_text(s_time_ago_layer, "---");
+    text_layer_set_text(s_time_ago_layer, "");
+    layer_set_hidden(text_layer_get_layer(s_time_ago_layer), true);
     layer_add_child(window_layer, text_layer_get_layer(s_time_ago_layer));
+
+    for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
+        s_hour_label_layers[i] = create_text_layer(
+            GRect(0, BOTTOM_ROW_Y, 30, 24),
+            fonts_get_system_font(FONT_KEY_GOTHIC_18_BOLD),
+            GTextAlignmentCenter
+        );
+        text_layer_set_text(s_hour_label_layers[i], "");
+        layer_add_child(window_layer, text_layer_get_layer(s_hour_label_layers[i]));
+    }
+
+    update_chart_hour_labels();
 
     // Sync spinner layer - bottom, to the right of date
     s_sync_layer = layer_create(GRect(110, 206, 16, 16));
@@ -1707,9 +1723,12 @@ static void main_window_unload(Window *window) {
     text_layer_destroy(s_cgm_value_layer);
     text_layer_destroy(s_delta_layer);
     text_layer_destroy(s_time_ago_layer);
+    for (int i = 0; i < CHART_DISPLAY_HOURS; i++) {
+        text_layer_destroy(s_hour_label_layers[i]);
+    }
     text_layer_destroy(s_setup_layer);
     text_layer_destroy(s_no_data_layer);
-    bitmap_layer_destroy(s_trend_layer);
+    layer_destroy(s_trend_layer);
     layer_destroy(s_chart_layer);
     layer_destroy(s_divider_layer);
     layer_destroy(s_loading_layer);
@@ -1717,9 +1736,6 @@ static void main_window_unload(Window *window) {
     layer_destroy(s_sync_layer);
     layer_destroy(s_alert_layer);
 
-    if (s_trend_bitmap) {
-        gbitmap_destroy(s_trend_bitmap);
-    }
 }
 
 /**
@@ -1749,7 +1765,7 @@ static void init() {
 
     // Open AppMessage with appropriate buffer sizes
     // Inbox needs to hold chart history (26 values * ~8 chars each = ~208) plus other fields
-    app_message_open(512, 64);
+    app_message_open(1024, 128);
 }
 
 /**
