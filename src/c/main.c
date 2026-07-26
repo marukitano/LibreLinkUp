@@ -46,7 +46,8 @@
 #define ALERT_HIGH        2
 
 // Chart configuration
-#define CHART_MAX_POINTS  26  // 130 minutes / 5 minutes = 26 points
+#define CHART_WINDOW_MINUTES 210
+#define CHART_MAX_POINTS  211  // one point per minute across 210 minutes
 #define CHART_DOT_RADIUS  4
 #define CHART_DISPLAY_HOURS 5  // four previous full hours plus the current hour
 #define CHART_LEFT_GUTTER 32   // room for min/max in the same font as hour labels
@@ -93,7 +94,9 @@ static char s_hour_label_buffers[CHART_DISPLAY_HOURS][4];
 
 // Chart data
 static int16_t s_chart_values[CHART_MAX_POINTS];
+static uint16_t s_chart_minutes_ago[CHART_MAX_POINTS];
 static int s_chart_count = 0;
+static time_t s_chart_history_received_time = 0;
 
 // Current trend
 static uint8_t s_current_trend = TREND_NONE;
@@ -712,46 +715,62 @@ static void parse_chart_history(const char *history) {
     }
 
     int16_t parsed_values[CHART_MAX_POINTS];
+    uint16_t parsed_minutes_ago[CHART_MAX_POINTS];
     int parsed_count = 0;
     const char *ptr = history;
 
     while (*ptr && parsed_count < CHART_MAX_POINTS) {
         int value = 0;
-        bool has_digits = false;
+        bool has_value = false;
 
         while (*ptr >= '0' && *ptr <= '9') {
-            has_digits = true;
+            has_value = true;
             value = value * 10 + (*ptr - '0');
             ptr++;
         }
 
-        // Accept the older "value:minutesAgo" format too.
+        int minutes_ago = parsed_count * 5;
+
         if (*ptr == ':') {
             ptr++;
+            minutes_ago = 0;
+
             while (*ptr >= '0' && *ptr <= '9') {
+                minutes_ago =
+                    minutes_ago * 10 + (*ptr - '0');
                 ptr++;
             }
         }
 
-        if (has_digits && value > 0) {
-            parsed_values[parsed_count] = (int16_t)value;
+        if (
+            has_value &&
+            value > 0 &&
+            minutes_ago >= 0 &&
+            minutes_ago <= CHART_WINDOW_MINUTES
+        ) {
+            parsed_values[parsed_count] =
+                (int16_t)value;
+            parsed_minutes_ago[parsed_count] =
+                (uint16_t)minutes_ago;
             parsed_count++;
         }
 
         if (*ptr == ',') {
             ptr++;
         } else if (*ptr != '\0') {
-            // Skip an unexpected character instead of discarding everything.
             ptr++;
         }
     }
 
-    // Only replace the visible chart when at least one valid value was parsed.
     if (parsed_count > 0) {
         for (int i = 0; i < parsed_count; i++) {
             s_chart_values[i] = parsed_values[i];
+            s_chart_minutes_ago[i] =
+                parsed_minutes_ago[i];
         }
+
         s_chart_count = parsed_count;
+        s_chart_history_received_time = time(NULL);
     }
 }
 
@@ -990,7 +1009,8 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     graphics_fill_rect(ctx, bounds, 0, GCornerNone);
 
     int margin = CHART_EDGE_MARGIN;
-    int chart_height = bounds.size.h - (margin * 2);
+    int vertical_margin = CHART_EDGE_MARGIN + 5;
+    int chart_height = bounds.size.h - (vertical_margin * 2);
     int chart_left = bounds.origin.x + margin;
     int chart_right = bounds.origin.x + bounds.size.w - margin;
     int label_x = bounds.origin.x + 1;
@@ -999,7 +1019,10 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     // glucose value that is already visible on the watchface.
     int local_count = s_chart_count;
     int16_t current_fallback = 0;
+    uint16_t current_fallback_age = 0;
     const int16_t *values = s_chart_values;
+    const uint16_t *minutes_ago =
+        s_chart_minutes_ago;
 
     if (local_count <= 0) {
         int current_mgdl =
@@ -1008,6 +1031,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         if (current_mgdl > 0) {
             current_fallback = (int16_t)current_mgdl;
             values = &current_fallback;
+            minutes_ago = &current_fallback_age;
             local_count = 1;
         }
     }
@@ -1028,7 +1052,16 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     struct tm *tick_time = localtime(&now);
     int current_minute = tick_time->tm_min;
     int chart_width = chart_right - chart_left;
-    const int chart_window_minutes = 210;
+    int history_elapsed_minutes = 0;
+
+    if (s_chart_history_received_time > 0) {
+        history_elapsed_minutes =
+            (int)((now - s_chart_history_received_time) / 60);
+
+        if (history_elapsed_minutes < 0) {
+            history_elapsed_minutes = 0;
+        }
+    }
 
     // Show the four previous full hours from the left edge through the
     // current time at the right edge. At 20:02 this is 16:00 to 20:02.
@@ -1037,7 +1070,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
 
         int x = chart_right -
                 (minutes_ago * chart_width) /
-                chart_window_minutes;
+                CHART_WINDOW_MINUTES;
 
         // Keep the time scale fixed at four hours. Old grid lines slide out
         // on the left instead of stretching the whole chart.
@@ -1050,8 +1083,8 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
 
         graphics_draw_line(
             ctx,
-            GPoint(x, bounds.origin.y + margin),
-            GPoint(x, bounds.origin.y + margin + chart_height)
+            GPoint(x, bounds.origin.y + vertical_margin),
+            GPoint(x, bounds.origin.y + vertical_margin + chart_height)
         );
     }
 
@@ -1059,34 +1092,64 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         return;
     }
 
-    int raw_min = values[0];
-    int raw_max = values[0];
+    bool have_visible_point = false;
+    int raw_min = 0;
+    int raw_max = 0;
 
-    for (int i = 1; i < local_count; i++) {
-        if (values[i] < raw_min) raw_min = values[i];
-        if (values[i] > raw_max) raw_max = values[i];
+    for (int i = 0; i < local_count; i++) {
+        int point_age =
+            minutes_ago[i] + history_elapsed_minutes;
+
+        if (
+            point_age < 0 ||
+            point_age > CHART_WINDOW_MINUTES
+        ) {
+            continue;
+        }
+
+        if (!have_visible_point) {
+            raw_min = values[i];
+            raw_max = values[i];
+            have_visible_point = true;
+        } else {
+            if (values[i] < raw_min) raw_min = values[i];
+            if (values[i] > raw_max) raw_max = values[i];
+        }
     }
 
-    // Dynamic scaling: use the full available height.
-    // Add a little padding and enforce a minimum span so tiny differences
-    // do not look huge.
-    const int padding = 10;      // about 0.6 mmol/L
-    const int min_span = 36;     // 2.0 mmol/L
-
-    int plot_min = raw_min - padding;
-    int plot_max = raw_max + padding;
-
-    if (plot_max - plot_min < min_span) {
-        int mid = (plot_min + plot_max) / 2;
-        plot_min = mid - (min_span / 2);
-        plot_max = mid + (min_span / 2);
+    if (!have_visible_point) {
+        return;
     }
+
+    // Tight proportional scaling: about seven percent headroom per side.
+    //
+    // A fixed 10 mg/dL padding wastes a large part of the chart when the
+    // visible glucose range is small. Derive the padding from the actual
+    // range instead, so minimum and maximum remain close to the edges.
+    int raw_span = raw_max - raw_min;
+    int scale_padding;
+
+    if (raw_span > 0) {
+        // Rounded-up 7% of the measured range, at least 1 mg/dL.
+        scale_padding = (raw_span * 7 + 99) / 100;
+
+        if (scale_padding < 1) {
+            scale_padding = 1;
+        }
+    } else {
+        // A perfectly flat graph still needs a small usable vertical range.
+        scale_padding = 3;
+    }
+
+    int plot_min = raw_min - scale_padding;
+    int plot_max = raw_max + scale_padding;
 
     if (plot_min < 1) {
         plot_min = 1;
     }
+
     if (plot_max <= plot_min) {
-        plot_max = plot_min + min_span;
+        plot_max = plot_min + 1;
     }
 
     // Find the exact screen position of the min/max measurement points.
@@ -1095,9 +1158,9 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     bool have_min_point = false;
     bool have_max_point = false;
     int min_point_x = chart_left;
-    int min_point_y = bounds.origin.y + margin + chart_height;
+    int min_point_y = bounds.origin.y + vertical_margin + chart_height;
     int max_point_x = chart_left;
-    int max_point_y = bounds.origin.y + margin;
+    int max_point_y = bounds.origin.y + vertical_margin;
 
     for (int i = 0; i < local_count; i++) {
         int original_value = values[i];
@@ -1106,17 +1169,21 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         if (clamped_value < plot_min) clamped_value = plot_min;
         if (clamped_value > plot_max) clamped_value = plot_max;
 
-        int x;
-        if (local_count == 1) {
-            x = chart_right - CHART_DOT_RADIUS;
-        } else {
-            int display_index = local_count - 1 - i;
-            x = chart_left +
-                (display_index * (chart_right - chart_left)) /
-                (local_count - 1);
+        int point_age =
+            minutes_ago[i] + history_elapsed_minutes;
+
+        if (
+            point_age < 0 ||
+            point_age > CHART_WINDOW_MINUTES
+        ) {
+            continue;
         }
 
-        int y = bounds.origin.y + margin + chart_height -
+        int x = chart_right -
+                (point_age * chart_width) /
+                CHART_WINDOW_MINUTES;
+
+        int y = bounds.origin.y + vertical_margin + chart_height -
                 ((clamped_value - plot_min) * chart_height /
                  (plot_max - plot_min));
 
@@ -1185,7 +1252,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
 
     if (s_low_threshold >= plot_min && s_low_threshold <= plot_max) {
         int low_warning_y =
-            bounds.origin.y + margin + chart_height -
+            bounds.origin.y + vertical_margin + chart_height -
             ((s_low_threshold - plot_min) * chart_height /
              (plot_max - plot_min));
 
@@ -1204,7 +1271,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
 
     if (s_high_threshold >= plot_min && s_high_threshold <= plot_max) {
         int high_warning_y =
-            bounds.origin.y + margin + chart_height -
+            bounds.origin.y + vertical_margin + chart_height -
             ((s_high_threshold - plot_min) * chart_height /
              (plot_max - plot_min));
 
@@ -1232,7 +1299,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         s_low_alarm_threshold <= plot_max
     ) {
         int low_alarm_y =
-            bounds.origin.y + margin + chart_height -
+            bounds.origin.y + vertical_margin + chart_height -
             ((s_low_alarm_threshold - plot_min) * chart_height /
              (plot_max - plot_min));
 
@@ -1254,7 +1321,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         s_high_alarm_threshold <= plot_max
     ) {
         int high_alarm_y =
-            bounds.origin.y + margin + chart_height -
+            bounds.origin.y + vertical_margin + chart_height -
             ((s_high_alarm_threshold - plot_min) * chart_height /
              (plot_max - plot_min));
 
@@ -1412,17 +1479,21 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         if (clamped_value < plot_min) clamped_value = plot_min;
         if (clamped_value > plot_max) clamped_value = plot_max;
 
-        int x;
-        if (local_count == 1) {
-            x = chart_right - CHART_DOT_RADIUS;
-        } else {
-            int display_index = local_count - 1 - i;
-            x = chart_left +
-                (display_index * (chart_right - chart_left)) /
-                (local_count - 1);
+        int point_age =
+            minutes_ago[i] + history_elapsed_minutes;
+
+        if (
+            point_age < 0 ||
+            point_age > CHART_WINDOW_MINUTES
+        ) {
+            continue;
         }
 
-        int y = bounds.origin.y + margin + chart_height -
+        int x = chart_right -
+                (point_age * chart_width) /
+                CHART_WINDOW_MINUTES;
+
+        int y = bounds.origin.y + vertical_margin + chart_height -
                 ((clamped_value - plot_min) * chart_height /
                  (plot_max - plot_min));
 
@@ -1614,7 +1685,6 @@ static void update_chart_hour_labels(void) {
     int chart_right = SCREEN_WIDTH - CHART_EDGE_MARGIN;
     int chart_width = chart_right - chart_left;
     int label_width = 30;
-    const int chart_window_minutes = 210;
 
     // The oldest full hour sits at the left edge and the current time at
     // the right edge. The five labels therefore remain visible together.
@@ -1626,7 +1696,7 @@ static void update_chart_hour_labels(void) {
 
         int x = chart_right -
                 (minutes_ago * chart_width) /
-                chart_window_minutes;
+                CHART_WINDOW_MINUTES;
         int label_x = x - (label_width / 2);
 
         // Keep a label visible while any part of it is still on-screen.
@@ -2344,8 +2414,8 @@ static void init() {
     app_message_register_outbox_sent(outbox_sent_callback);
 
     // Open AppMessage with appropriate buffer sizes
-    // Inbox needs to hold chart history (26 values * ~8 chars each = ~208) plus other fields
-    app_message_open(1024, 128);
+    // Inbox holds up to 211 compact "value:minutesAgo" chart points.
+    app_message_open(4096, 128);
 }
 
 /**

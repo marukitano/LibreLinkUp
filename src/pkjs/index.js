@@ -8,9 +8,12 @@
 // Import Clay for configuration
 var Clay = require("pebble-clay");
 var clayConfig = require("./config");
+var i18n = require("./i18n");
 
 function customClay(minified) {
 	var clayConfigPage = this;
+	var localizedText =
+		clayConfigPage.meta.userData || {};
 
 	clayConfigPage.on(
 		clayConfigPage.EVENTS.AFTER_BUILD,
@@ -33,8 +36,14 @@ function customClay(minified) {
 				if (accountButton) {
 					accountButton.set(
 						accountSettingsVisible
-							? "Hide Account Settings"
-							: "Show Account Settings"
+							? (
+								localizedText.hideAccountSettings ||
+								"Hide Account Settings"
+							)
+							: (
+								localizedText.showAccountSettings ||
+								"Show Account Settings"
+							)
 					);
 				}
 			}
@@ -170,8 +179,11 @@ function customClay(minified) {
 				if (
 					typeof confirm === "function" &&
 					!confirm(
-						"Restore all watchface settings to their defaults? " +
-						"LibreLinkUp account details will be kept."
+						localizedText.restoreConfirm ||
+						(
+							"Restore all watchface settings to their defaults? " +
+							"LibreLinkUp account details will be kept."
+						)
 					)
 				) {
 					return;
@@ -187,9 +199,9 @@ function customClay(minified) {
 					highThresholdMmol: "10.0",
 					lowThresholdMgdl: "80",
 					highThresholdMgdl: "180",
-					goodColor: 0x00AA55,
-					warningColor: 0xFFAA00,
-					alarmColor: 0xFF0000,
+					goodColor: "00AA55",
+					warningColor: "FFAA00",
+					alarmColor: "FF0000",
 					acousticAlarmEnabled: false,
 					lowAlarmThresholdMmol: "3.9",
 					lowAlarmThresholdMgdl: "70",
@@ -211,8 +223,11 @@ function customClay(minified) {
 
 				if (typeof alert === "function") {
 					alert(
-						"Default settings restored. " +
-						"Press Save Settings to apply them."
+						localizedText.restoredMessage ||
+						(
+							"Default settings restored. " +
+							"Press Save Settings to apply them."
+						)
 					);
 				}
 			});
@@ -223,7 +238,10 @@ function customClay(minified) {
 var clay = new Clay(
 	clayConfig,
 	customClay,
-	{ autoHandleEvents: false }
+	{
+		autoHandleEvents: false,
+		userData: i18n.getRuntimeStrings("en")
+	}
 );
 
 // AppMessage keys (must match appinfo.json and main.c)
@@ -261,6 +279,9 @@ var LIBRE_URLS = {
 var LIBRE_PRODUCT = "llu.ios";
 var LIBRE_VERSION = "4.16.0";
 
+var CHART_WINDOW_MINUTES = 210;
+var CHART_MAX_POINTS = 211;
+
 // Internal trend direction mapping used by the Pebble watch
 var TREND_DIRECTIONS = {
 	None: 0,
@@ -286,6 +307,7 @@ var settings = {
 	password: "",
 	server: "europe",
 	unit: "mgdl",
+	language: "auto",
 	reversed: false,
 	quickView: false,
 	highThreshold: 180,
@@ -322,6 +344,17 @@ function loadAlarmState() {
 	localStorage.removeItem("vibe-state");
 }
 
+function logCurrentColorDefaults() {
+	console.log(
+		"CURRENT_COLOR_DEFAULTS_JSON " +
+			JSON.stringify({
+				good: settings.goodColor,
+				warning: settings.warningColor,
+				alarm: settings.alarmColor
+			})
+	);
+}
+
 /**
  * Persist the last evaluated reading timestamp.
  */
@@ -342,14 +375,97 @@ function saveAlarmState() {
  */
 function cacheReadings(readings) {
 	if (!readings || readings.length === 0) {
-		return;
+		return [];
 	}
+
+	var now = Date.now();
+	var cutoff =
+		now - CHART_WINDOW_MINUTES * 60 * 1000;
+	var byTimestamp = {};
+	var stored = localStorage.getItem("cgm-cache");
+
+	if (stored) {
+		try {
+			var previousCache = JSON.parse(stored);
+			var previousReadings =
+				previousCache && previousCache.readings
+					? previousCache.readings
+					: [];
+
+			previousReadings.forEach(function (reading) {
+				var timestamp =
+					parseReadingTimestamp(reading.WT);
+
+				if (
+					timestamp &&
+					timestamp >= cutoff &&
+					timestamp <= now + 2 * 60 * 1000
+				) {
+					byTimestamp[String(timestamp)] = {
+						Value: Math.round(reading.Value),
+						WT: "/Date(" + timestamp + ")/"
+					};
+				}
+			});
+		} catch (e) {
+			console.log(
+				"Ignoring invalid old CGM cache: " + e
+			);
+		}
+	}
+
+	// Fresh API data wins when a timestamp already exists.
+	readings.forEach(function (reading) {
+		var timestamp =
+			parseReadingTimestamp(reading.WT);
+		var value = Number(reading.Value);
+
+		if (
+			!timestamp ||
+			!isFinite(value) ||
+			timestamp < cutoff ||
+			timestamp > now + 2 * 60 * 1000
+		) {
+			return;
+		}
+
+		byTimestamp[String(timestamp)] = {
+			Value: Math.round(value),
+			WT: "/Date(" + timestamp + ")/"
+		};
+	});
+
+	var merged = Object.keys(byTimestamp)
+		.map(function (key) {
+			return byTimestamp[key];
+		})
+		.sort(function (a, b) {
+			return (
+				parseReadingTimestamp(b.WT) -
+				parseReadingTimestamp(a.WT)
+			);
+		})
+		.slice(0, CHART_MAX_POINTS);
+
 	var cache = {
-		readings: readings,
-		cachedAt: Date.now()
+		readings: merged,
+		cachedAt: now
 	};
-	localStorage.setItem("cgm-cache", JSON.stringify(cache));
-	console.log("Cached " + readings.length + " readings");
+
+	localStorage.setItem(
+		"cgm-cache",
+		JSON.stringify(cache)
+	);
+
+	console.log(
+		"Rolling chart cache: " +
+			merged.length +
+			" points across up to " +
+			CHART_WINDOW_MINUTES +
+			" minutes"
+	);
+
+	return merged;
 }
 
 /**
@@ -578,6 +694,21 @@ function rgbIntToClayColor(value, fallback) {
 	}
 
 	return "0x" + hex;
+}
+
+/**
+ * Convert an internal color to the bare six-digit hex string Clay expects
+ * when a ColorItem is updated through set() or setSettings().
+ */
+function colorForClay(value, fallback) {
+	var rgb = colorToRgbInt(value, fallback);
+	var hex = rgb.toString(16).toUpperCase();
+
+	while (hex.length < 6) {
+		hex = "0" + hex;
+	}
+
+	return hex;
 }
 
 function normalizeColorSettings() {
@@ -1185,7 +1316,7 @@ function normalizeLibreReadings(graphResponse) {
 		return parseReadingTimestamp(b.WT) - parseReadingTimestamp(a.WT);
 	});
 
-	return normalized.slice(0, 26);
+	return normalized;
 }
 
 /**
@@ -1240,9 +1371,10 @@ function processReadings(readings, fromCache) {
 		return;
 	}
 
-	// Cache fresh readings from the API
+	// Merge fresh API readings with the persisted rolling history.
+	// Every genuinely new live reading remains visible for 210 minutes.
 	if (!fromCache) {
-		cacheReadings(readings);
+		readings = cacheReadings(readings);
 	}
 
 	console.log("Processing " + readings.length + " readings" + (fromCache ? " (from cache)" : ""));
@@ -1282,13 +1414,38 @@ function processReadings(readings, fromCache) {
 		);
 	}
 
-	// Compact history: values only, most recent first.
-	// The chart uses equal horizontal spacing, so timestamps are unnecessary.
-	var history = readings
-		.map(function (r) {
-			return Math.round(r.Value);
-		})
-		.join(",");
+	// Compact time-aware history: "value:minutesAgo", newest first.
+	// The watch uses the real age for the horizontal position.
+	var historyNow = Date.now();
+	var historyEntries = [];
+
+	readings.forEach(function (reading) {
+		var timestamp =
+			parseReadingTimestamp(reading.WT);
+
+		if (!timestamp) {
+			return;
+		}
+
+		var ageMinutes = Math.round(
+			(historyNow - timestamp) / 60000
+		);
+
+		if (
+			ageMinutes < 0 ||
+			ageMinutes > CHART_WINDOW_MINUTES
+		) {
+			return;
+		}
+
+		historyEntries.push(
+			Math.round(reading.Value) +
+				":" +
+				ageMinutes
+		);
+	});
+
+	var history = historyEntries.join(",");
 
 	// Update last good reading time for smart polling
 	lastGoodReadingTime = latestTimestamp;
@@ -1338,13 +1495,13 @@ function processReadings(readings, fromCache) {
 			"ago=" +
 			minutesAgo +
 			"min, history=" +
-			readings.length +
+			historyEntries.length +
 			" points"
 	);
 
 	console.log(
 		"Sending compact diagram: " +
-			readings.length +
+			historyEntries.length +
 			" points, " +
 			history.length +
 			" bytes"
@@ -1506,12 +1663,41 @@ function scheduleNextPoll() {
 Pebble.addEventListener("showConfiguration", function (e) {
 	console.log("Showing configuration");
 
+	var phoneLanguage =
+		typeof navigator !== "undefined" &&
+		navigator.language
+			? navigator.language
+			: "en";
+	var effectiveLanguage = i18n.resolveLanguage(
+		settings.language,
+		phoneLanguage
+	);
+	var localizedConfig = i18n.localizeConfig(
+		clayConfig,
+		effectiveLanguage
+	);
+	var runtimeStrings =
+		i18n.getRuntimeStrings(effectiveLanguage);
+
+	clay.config = localizedConfig;
+	clay.meta.userData = runtimeStrings;
+
+	console.log(
+		"Configuration language: preference=" +
+			settings.language +
+			", phone=" +
+			phoneLanguage +
+			", active=" +
+			effectiveLanguage
+	);
+
 	// Pass current settings to Clay so the form shows saved values
 	var claySettings = {
 		accountName: settings.accountName,
 		password: settings.password,
 		server: settings.server,
 		unit: settings.unit,
+		language: settings.language,
 		reversed: settings.reversed,
 		quickView: settings.quickView,
 		lowThresholdMmol: thresholdForSettings(settings.lowThreshold),
@@ -1523,9 +1709,18 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		lowAlarmThresholdMgdl: settings.lowAlarmThreshold,
 		highAlarmThresholdMmol: thresholdForSettings(settings.highAlarmThreshold),
 		highAlarmThresholdMgdl: settings.highAlarmThreshold,
-		goodColor: settings.goodColor,
-		warningColor: settings.warningColor,
-		alarmColor: settings.alarmColor,
+		goodColor: colorForClay(
+			settings.goodColor,
+			"00AA55"
+		),
+		warningColor: colorForClay(
+			settings.warningColor,
+			"FFAA00"
+		),
+		alarmColor: colorForClay(
+			settings.alarmColor,
+			"FF0000"
+		),
 		pollIntervalMinutes: settings.pollIntervalMinutes,
 		deltaIntervalMinutes: settings.deltaIntervalMinutes
 	};
@@ -1557,6 +1752,22 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.password !== undefined) settings.password = dict.password.value || "";
 	if (dict.server !== undefined) settings.server = dict.server.value || "europe";
 	if (dict.unit !== undefined) settings.unit = dict.unit.value || "mgdl";
+	if (dict.language !== undefined) {
+		var selectedLanguage =
+			dict.language.value || "auto";
+		var supportedLanguages = [
+			"auto",
+			"en",
+			"de",
+			"fr",
+			"it"
+		];
+
+		settings.language =
+			supportedLanguages.indexOf(selectedLanguage) >= 0
+				? selectedLanguage
+				: "auto";
+	}
 	if (dict.reversed !== undefined) settings.reversed = !!dict.reversed.value;
 	if (dict.quickView !== undefined) settings.quickView = !!dict.quickView.value;
 
@@ -1647,6 +1858,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	}
 
 	saveSettings();
+	logCurrentColorDefaults();
 
 	// Reset session on credential change
 	authToken = null;
@@ -1663,6 +1875,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 Pebble.addEventListener("ready", function () {
 	console.log("LibreLinkUp PebbleKit JS ready");
 	loadSettings();
+	logCurrentColorDefaults();
 	loadAlarmState();
 	fetchData();
 });

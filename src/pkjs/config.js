@@ -4,6 +4,23 @@ module.exports = [
 		defaultValue: "OpenLibreLinkUp Settings"
 	},
 	{
+		type: "select",
+		messageKey: "language",
+		label: "Language / Sprache / Langue / Lingua",
+		defaultValue: "auto",
+		options: [
+			{
+				label: "Automatic (phone language)",
+				value: "auto"
+			},
+			{ label: "English", value: "en" },
+			{ label: "Deutsch", value: "de" },
+			{ label: "Français", value: "fr" },
+			{ label: "Italiano", value: "it" }
+		],
+		description: "Language changes take effect the next time the settings are opened."
+	},
+	{
 		type: "section",
 		items: [
 			{
@@ -56,7 +73,7 @@ module.exports = [
 				type: "color",
 				messageKey: "goodColor",
 				label: "Good Color",
-				defaultValue: "0x00AA55"
+				defaultValue: "00AA55"
 			},
 			{
 				type: "input",
@@ -127,7 +144,7 @@ module.exports = [
 				type: "color",
 				messageKey: "warningColor",
 				label: "Warning Color",
-				defaultValue: "0xFFAA00"
+				defaultValue: "FFAA00"
 			}
 		]
 	},
@@ -142,7 +159,7 @@ module.exports = [
 				type: "color",
 				messageKey: "alarmColor",
 				label: "Alarm Color",
-				defaultValue: "0xFF0000"
+				defaultValue: "FF0000"
 			},
 			{
 				type: "input",
