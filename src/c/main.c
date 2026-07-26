@@ -897,6 +897,11 @@ static void update_quick_view_state(void) {
         layer_set_hidden(s_quick_view_layer, !active);
     }
 
+    // Redraw the divider immediately when Quick View changes state.
+    if (s_divider_layer) {
+        layer_mark_dirty(s_divider_layer);
+    }
+
     apply_cgm_row_colors();
 }
 
@@ -991,6 +996,11 @@ static void trend_layer_update_proc(Layer *layer, GContext *ctx) {
  * Draw the horizontal divider line with 50% dot pattern
  */
 static void divider_layer_update_proc(Layer *layer, GContext *ctx) {
+    // Hide the divider while Quick View covers the CGM area.
+    if (s_quick_view_active) {
+        return;
+    }
+
     GRect bounds = layer_get_bounds(layer);
     graphics_context_set_stroke_color(ctx, GColorLightGray);
     for (int x = 0; x < bounds.size.w; x += 2) {
@@ -1152,14 +1162,11 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         plot_max = plot_min + 1;
     }
 
-    // Find the exact screen position of the min/max measurement points.
-    // Their text labels will be vertically centered on these coordinates,
-    // allowing perfectly horizontal leader lines that hit the point centers.
+    // Find the exact vertical position of the min/max measurement points.
+    // Their text labels and full-width dotted guides use these Y coordinates.
     bool have_min_point = false;
     bool have_max_point = false;
-    int min_point_x = chart_left;
     int min_point_y = bounds.origin.y + vertical_margin + chart_height;
-    int max_point_x = chart_left;
     int max_point_y = bounds.origin.y + vertical_margin;
 
     for (int i = 0; i < local_count; i++) {
@@ -1188,13 +1195,11 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
                  (plot_max - plot_min));
 
         if (!have_min_point && original_value == raw_min) {
-            min_point_x = x;
             min_point_y = y;
             have_min_point = true;
         }
 
         if (!have_max_point && original_value == raw_max) {
-            max_point_x = x;
             max_point_y = y;
             have_max_point = true;
         }
@@ -1442,33 +1447,58 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         min_label_rect.size.h
     );
 
-    if (have_max_point) {
-        int end_x = max_point_x - CHART_DOT_RADIUS;
-        if (end_x > max_label_line_x) {
-            for (int x = max_label_line_x; x < end_x; x += 4) {
-                int dot_end_x = x + 1;
-                if (dot_end_x > end_x) dot_end_x = end_x;
-                graphics_draw_line(
-                    ctx,
-                    GPoint(x, max_point_y),
-                    GPoint(dot_end_x, max_point_y)
-                );
+    // Draw each extrema guide from its label to the right display edge.
+    //
+    // Chart points are painted afterwards, so they naturally cover the
+    // dotted guide at their own position. This also works when the maximum
+    // point itself is at the far-right edge.
+    int extrema_right_edge_x =
+        bounds.origin.x + bounds.size.w - 1;
+
+    if (
+        have_max_point &&
+        max_label_line_x < extrema_right_edge_x
+    ) {
+        for (
+            int x = max_label_line_x;
+            x <= extrema_right_edge_x;
+            x += 4
+        ) {
+            int dot_end_x = x + 1;
+
+            if (dot_end_x > extrema_right_edge_x) {
+                dot_end_x = extrema_right_edge_x;
             }
+
+            graphics_draw_line(
+                ctx,
+                GPoint(x, max_point_y),
+                GPoint(dot_end_x, max_point_y)
+            );
         }
     }
 
-    if (have_min_point && show_min_label) {
-        int end_x = min_point_x - CHART_DOT_RADIUS;
-        if (end_x > min_label_line_x) {
-            for (int x = min_label_line_x; x < end_x; x += 4) {
-                int dot_end_x = x + 1;
-                if (dot_end_x > end_x) dot_end_x = end_x;
-                graphics_draw_line(
-                    ctx,
-                    GPoint(x, min_point_y),
-                    GPoint(dot_end_x, min_point_y)
-                );
+    if (
+        have_min_point &&
+        show_min_label &&
+        min_label_line_x < extrema_right_edge_x
+    ) {
+        for (
+            int x = min_label_line_x;
+            x <= extrema_right_edge_x;
+            x += 4
+        ) {
+            int dot_end_x = x + 1;
+
+            if (dot_end_x > extrema_right_edge_x) {
+                dot_end_x = extrema_right_edge_x;
             }
+
+            graphics_draw_line(
+                ctx,
+                GPoint(x, min_point_y),
+                GPoint(dot_end_x, min_point_y)
+            );
         }
     }
 

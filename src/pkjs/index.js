@@ -1144,36 +1144,39 @@ function calculateDeltaForInterval(
 
 /**
  * Derive the trend arrow from the same delta shown on the watch.
+ *
+ * The thresholds are based on the displayed one-decimal mmol/L delta:
+ * - -0.1 through +0.1: flat
+ * - more than +/-0.1 and below +/-0.3: 45 degrees
+ * - from +/-0.3: vertical
  */
-function trendFromDelta(
-	delta,
-	intervalMinutes
-) {
+function trendFromDelta(delta) {
 	if (
 		delta === null ||
-		delta === undefined
+		delta === undefined ||
+		!isFinite(delta)
 	) {
 		return TREND_DIRECTIONS.None;
 	}
 
-	var interval =
-		parseInt(intervalMinutes, 10) || 5;
+	// Match the arrow to the one-decimal mmol/L delta shown on the watch.
+	var displayedDeltaMmol =
+		Math.round((delta / 18.0182) * 10) / 10;
 
-	if (interval <= 0) {
-		return TREND_DIRECTIONS.None;
-	}
-
-	// The arrow uses the normalized delta and the selected interval.
-	// Less than 1 mg/dL per minute is treated as stable.
-	var rateMgdlPerMinute =
-		delta / interval;
-
-	if (rateMgdlPerMinute >= 1) {
+	if (displayedDeltaMmol >= 0.3) {
 		return TREND_DIRECTIONS.SingleUp;
 	}
 
-	if (rateMgdlPerMinute <= -1) {
+	if (displayedDeltaMmol > 0.1) {
+		return TREND_DIRECTIONS.FortyFiveUp;
+	}
+
+	if (displayedDeltaMmol <= -0.3) {
 		return TREND_DIRECTIONS.SingleDown;
+	}
+
+	if (displayedDeltaMmol < -0.1) {
+		return TREND_DIRECTIONS.FortyFiveDown;
 	}
 
 	return TREND_DIRECTIONS.Flat;
@@ -1398,10 +1401,7 @@ function processReadings(readings, fromCache) {
 		deltaInfo ? deltaInfo.delta : null;
 	var deltaText =
 		deltaInfo ? formatDelta(delta) : "--";
-	var latestTrend = trendFromDelta(
-		delta,
-		settings.deltaIntervalMinutes
-	);
+	var latestTrend = trendFromDelta(delta);
 
 	if (deltaInfo) {
 		console.log(
