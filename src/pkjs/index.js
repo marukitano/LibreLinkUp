@@ -246,6 +246,7 @@ var KEY_POLL_INTERVAL = 16;
 var KEY_QUICK_VIEW = 17;
 var KEY_LOW_ALARM_THRESHOLD = 18;
 var KEY_HIGH_ALARM_THRESHOLD = 19;
+var KEY_CGM_UNIT = 20;
 
 // LibreLinkUp API endpoints
 var LIBRE_URLS = {
@@ -1305,6 +1306,8 @@ function processReadings(readings, fromCache) {
 	message[KEY_CGM_VALUE] = formatGlucose(latestValue);
 	message[KEY_CGM_DELTA] = deltaText;
 	message[KEY_CGM_TREND] = latestTrend;
+	message[KEY_CGM_UNIT] =
+		settings.unit === "mmol" ? "mmol/L" : "mg/dL";
 	message[KEY_CGM_TIME_AGO] = minutesAgo;
 	message[KEY_CGM_HISTORY] = history;
 	message[KEY_CGM_ALERT] = pendingAlert;

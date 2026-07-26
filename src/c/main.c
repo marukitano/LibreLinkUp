@@ -27,6 +27,7 @@
 #define KEY_QUICK_VIEW    17
 #define KEY_LOW_ALARM_THRESHOLD 18
 #define KEY_HIGH_ALARM_THRESHOLD 19
+#define KEY_CGM_UNIT     20
 
 // Trend arrow indices
 #define TREND_NONE        0
@@ -75,6 +76,7 @@ static Layer *s_delta_triangle_layer;
 static TextLayer *s_time_ago_layer;
 static TextLayer *s_hour_label_layers[CHART_DISPLAY_HOURS];
 static Layer *s_trend_layer;
+static TextLayer *s_unit_layer;
 static TextLayer *s_setup_layer;
 static TextLayer *s_no_data_layer;
 static Layer *s_loading_layer;
@@ -85,6 +87,7 @@ static char s_time_buffer[12];
 static char s_date_buffer[32];
 static char s_cgm_value_buffer[8];
 static char s_delta_buffer[12];
+static char s_unit_buffer[8];
 static char s_time_ago_buffer[24];
 static char s_hour_label_buffers[CHART_DISPLAY_HOURS][4];
 
@@ -624,6 +627,7 @@ static void hide_data_layers(void) {
 
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), true);
     layer_set_hidden(s_trend_layer, true);
+    layer_set_hidden(text_layer_get_layer(s_unit_layer), true);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), true);
     layer_set_hidden(s_delta_triangle_layer, true);
     layer_set_hidden(text_layer_get_layer(s_time_ago_layer), true);
@@ -824,6 +828,9 @@ static void apply_cgm_row_colors(void) {
     }
     if (s_delta_layer) {
         text_layer_set_text_color(s_delta_layer, info_color);
+    }
+    if (s_unit_layer) {
+        text_layer_set_text_color(s_unit_layer, value_color);
     }
     if (s_time_ago_layer) {
         text_layer_set_text_color(s_time_ago_layer, info_color);
@@ -1525,6 +1532,7 @@ static void update_layout_for_cgm_text(const char *cgm_text) {
     // Show CGM value and trend layers (hidden on startup until data arrives)
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), false);
     layer_set_hidden(s_trend_layer, false);
+    layer_set_hidden(text_layer_get_layer(s_unit_layer), false);
 
     // Check if this is a LOW or HIGH value - hide delta/update block in these cases
     bool hide_delta = (strcmp(cgm_text, "LOW") == 0 || strcmp(cgm_text, "HIGH") == 0);
@@ -1566,6 +1574,13 @@ static void update_layout_for_cgm_text(const char *cgm_text) {
     int trend_x = start_x + cgm_size.w + gap;
     layer_set_frame(s_trend_layer,
                     GRect(trend_x, CGM_ROW_Y + 9, 30, 30));
+
+    // Libre-style glucose unit: clearly readable below the value/arrow block.
+    // Keep it left of the separate update/delta block on the right.
+    layer_set_frame(
+        text_layer_get_layer(s_unit_layer),
+        GRect(trend_x - 10, CGM_ROW_Y + 32, 54, 24)
+    );
 
     // Position the stacked update/delta block after trend
     if (!hide_delta) {
@@ -1708,6 +1723,7 @@ static void update_time_ago_display() {
     // the last sensor value is.
     layer_set_hidden(text_layer_get_layer(s_cgm_value_layer), is_stale);
     layer_set_hidden(s_trend_layer, is_stale);
+    layer_set_hidden(text_layer_get_layer(s_unit_layer), is_stale);
     layer_set_hidden(text_layer_get_layer(s_delta_layer), is_stale);
     layer_set_hidden(s_delta_triangle_layer, is_stale);
     layer_set_hidden(text_layer_get_layer(s_no_data_layer), !is_stale);
@@ -1837,6 +1853,18 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     if (delta_tuple) {
         snprintf(s_delta_buffer, sizeof(s_delta_buffer), "%s", delta_tuple->value->cstring);
         text_layer_set_text(s_delta_layer, s_delta_buffer);
+    }
+
+    // Read the selected glucose unit shown below the trend arrow.
+    Tuple *unit_tuple = dict_find(iterator, KEY_CGM_UNIT);
+    if (unit_tuple && unit_tuple->length > 1) {
+        snprintf(
+            s_unit_buffer,
+            sizeof(s_unit_buffer),
+            "%s",
+            unit_tuple->value->cstring
+        );
+        text_layer_set_text(s_unit_layer, s_unit_buffer);
     }
 
     // Read CGM value and update layout (uses delta width for centering).
@@ -2145,6 +2173,18 @@ static void main_window_load(Window *window) {
     layer_set_hidden(s_trend_layer, true);
     layer_add_child(window_layer, s_trend_layer);
 
+    // Glucose unit in the visual style of the Libre app:
+    // large enough to read and grouped with the main glucose value.
+    s_unit_layer = create_text_layer(
+        GRect(98, CGM_ROW_Y + 32, 54, 24),
+        fonts_get_system_font(FONT_KEY_GOTHIC_18),
+        GTextAlignmentCenter
+    );
+    snprintf(s_unit_buffer, sizeof(s_unit_buffer), "%s", "mmol/L");
+    text_layer_set_text(s_unit_layer, s_unit_buffer);
+    layer_set_hidden(text_layer_get_layer(s_unit_layer), true);
+    layer_add_child(window_layer, text_layer_get_layer(s_unit_layer));
+
     // Delta layer (position updated dynamically)
     // Shown below the "last update" text, with a small triangle in front.
     s_delta_layer = create_text_layer(
@@ -2262,6 +2302,7 @@ static void main_window_unload(Window *window) {
 
     text_layer_destroy(s_time_layer);
     text_layer_destroy(s_cgm_value_layer);
+    text_layer_destroy(s_unit_layer);
     text_layer_destroy(s_delta_layer);
     layer_destroy(s_delta_triangle_layer);
     text_layer_destroy(s_time_ago_layer);

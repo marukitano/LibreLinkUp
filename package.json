@@ -58,7 +58,8 @@
       "poll_interval": 16,
       "quick_view": 17,
       "low_alarm_threshold": 18,
-      "high_alarm_threshold": 19
+      "high_alarm_threshold": 19,
+      "cgm_unit": 20
     },
     "resources": {
       "media": []
