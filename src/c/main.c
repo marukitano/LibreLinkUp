@@ -7,7 +7,7 @@
 
 #include <pebble.h>
 
-// AppMessage keys (must match package.json)
+// AppMessage keys (must match appinfo.json)
 #define KEY_CGM_VALUE     0
 #define KEY_CGM_DELTA     1
 #define KEY_CGM_TREND     2
@@ -443,7 +443,7 @@ static void alert_layer_update_proc(Layer *layer, GContext *ctx) {
 
 /**
  * Update alert icon visibility based on data staleness and connection status
- * Alert shown when: data 15+ min old AND outbox failure (including failed retry)
+ * Alert shown when: data 10+ min old AND outbox failure (including failed retry)
  * Alert hidden when: sync spinner is showing
  */
 static void update_alert_visibility(void) {
@@ -706,8 +706,8 @@ static int parse_display_glucose_to_mgdl(const char *text) {
 
 /**
  * Parse compact chart history.
- * Current format: "120:0,125:5,..." (most recent first).
- * The older value-only format "120,125,130,..." remains accepted.
+ * Current format: "120,125,130,..." (most recent first).
+ * The older "120:0,125:5,..." format remains accepted for compatibility.
  */
 static void parse_chart_history(const char *history) {
     if (history == NULL || history[0] == '\0') {

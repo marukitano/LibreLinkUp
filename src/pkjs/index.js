@@ -199,9 +199,9 @@ function customClay(minified) {
 					highThresholdMmol: "10.0",
 					lowThresholdMgdl: "80",
 					highThresholdMgdl: "180",
-					goodColor: "00AA00",
+					goodColor: "00AA55",
 					warningColor: "FFAA00",
-					alarmColor: "AA0000",
+					alarmColor: "FF0000",
 					acousticAlarmEnabled: false,
 					lowAlarmThresholdMmol: "3.9",
 					lowAlarmThresholdMgdl: "70",
@@ -300,12 +300,13 @@ var TREND_DIRECTIONS = {
 var authToken = null;
 var accountId = null;
 var patientId = null;
+var lastGoodReadingTime = null;
 var pollTimer = null;
 var settings = {
 	accountName: "",
 	password: "",
 	server: "europe",
-	unit: "mmol",
+	unit: "mgdl",
 	language: "auto",
 	reversed: false,
 	quickView: false,
@@ -314,9 +315,9 @@ var settings = {
 	acousticAlarmEnabled: false,
 	lowAlarmThreshold: 70,
 	highAlarmThreshold: 250,
-	goodColor: "0x00AA00",
+	goodColor: "0x00AA55",
 	warningColor: "0xFFAA00",
-	alarmColor: "0xAA0000",
+	alarmColor: "0xFF0000",
 	pollIntervalMinutes: 5,
 	deltaIntervalMinutes: 5
 };
@@ -341,6 +342,17 @@ function loadAlarmState() {
 
 	// Remove obsolete prediction/delay/repeat state from older versions.
 	localStorage.removeItem("vibe-state");
+}
+
+function logCurrentColorDefaults() {
+	console.log(
+		"CURRENT_COLOR_DEFAULTS_JSON " +
+			JSON.stringify({
+				good: settings.goodColor,
+				warning: settings.warningColor,
+				alarm: settings.alarmColor
+			})
+	);
 }
 
 /**
@@ -633,7 +645,7 @@ function thresholdInputToMgdl(
  * Clay may return a color either as:
  * - a decimal number, for example 43605
  * - a decimal string, for example "43605"
- * - a hexadecimal string, for example "0x00AA00" or "#00AA55"
+ * - a hexadecimal string, for example "0x00AA55" or "#00AA55"
  *
  * Pure digit strings must be interpreted as decimal. Treating "43605" as
  * hexadecimal produces 0x043605, which becomes nearly black on Pebble.
@@ -702,7 +714,7 @@ function colorForClay(value, fallback) {
 function normalizeColorSettings() {
 	settings.goodColor = rgbIntToClayColor(
 		settings.goodColor,
-		"0x00AA00"
+		"0x00AA55"
 	);
 	settings.warningColor = rgbIntToClayColor(
 		settings.warningColor,
@@ -710,7 +722,7 @@ function normalizeColorSettings() {
 	);
 	settings.alarmColor = rgbIntToClayColor(
 		settings.alarmColor,
-		"0xAA0000"
+		"0xFF0000"
 	);
 }
 
@@ -1051,9 +1063,9 @@ function libreFetchConnections() {
  * Calculate the glucose change over the configured interval.
  *
  * LibreLinkUp history points are usually spaced around five minutes apart,
- * while the newest live reading may fall between those points. The nearest
- * older reading is used, and the observed change is normalized to the
- * selected interval. Comparisons older than 60 minutes are rejected.
+ * while the newest live reading may fall between those points. Therefore
+ * the reading closest to the requested interval is used. A maximum
+ * difference of three minutes prevents misleading deltas across data gaps.
  */
 function calculateDeltaForInterval(
 	readings,
@@ -1435,6 +1447,9 @@ function processReadings(readings, fromCache) {
 
 	var history = historyEntries.join(",");
 
+	// Update last good reading time for smart polling
+	lastGoodReadingTime = latestTimestamp;
+
 	// Evaluate the current value once for every genuinely new reading.
 	pendingAlert = ALERT_NONE;
 	checkCurrentAlarm(
@@ -1457,9 +1472,9 @@ function processReadings(readings, fromCache) {
 	message[KEY_HIGH_THRESHOLD] = settings.highThreshold;
 	message[KEY_LOW_ALARM_THRESHOLD] = settings.lowAlarmThreshold;
 	message[KEY_HIGH_ALARM_THRESHOLD] = settings.highAlarmThreshold;
-	message[KEY_GOOD_COLOR] = colorToRgbInt(settings.goodColor, "0x00AA00");
+	message[KEY_GOOD_COLOR] = colorToRgbInt(settings.goodColor, "0x00AA55");
 	message[KEY_WARNING_COLOR] = colorToRgbInt(settings.warningColor, "0xFFAA00");
-	message[KEY_ALARM_COLOR] = colorToRgbInt(settings.alarmColor, "0xAA0000");
+	message[KEY_ALARM_COLOR] = colorToRgbInt(settings.alarmColor, "0xFF0000");
 	message[KEY_POLL_INTERVAL] = settings.pollIntervalMinutes;
 	message[KEY_REVERSED] = settings.reversed ? 1 : 0;
 	message[KEY_QUICK_VIEW] = settings.quickView ? 1 : 0;
@@ -1696,7 +1711,7 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		highAlarmThresholdMgdl: settings.highAlarmThreshold,
 		goodColor: colorForClay(
 			settings.goodColor,
-			"00AA00"
+			"00AA55"
 		),
 		warningColor: colorForClay(
 			settings.warningColor,
@@ -1704,7 +1719,7 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		),
 		alarmColor: colorForClay(
 			settings.alarmColor,
-			"AA0000"
+			"FF0000"
 		),
 		pollIntervalMinutes: settings.pollIntervalMinutes,
 		deltaIntervalMinutes: settings.deltaIntervalMinutes
@@ -1736,7 +1751,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.accountName !== undefined) settings.accountName = dict.accountName.value || "";
 	if (dict.password !== undefined) settings.password = dict.password.value || "";
 	if (dict.server !== undefined) settings.server = dict.server.value || "europe";
-	if (dict.unit !== undefined) settings.unit = dict.unit.value || "mmol";
+	if (dict.unit !== undefined) settings.unit = dict.unit.value || "mgdl";
 	if (dict.language !== undefined) {
 		var selectedLanguage =
 			dict.language.value || "auto";
@@ -1812,7 +1827,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.goodColor !== undefined) {
 		settings.goodColor = rgbIntToClayColor(
 			dict.goodColor.value,
-			"0x00AA00"
+			"0x00AA55"
 		);
 	}
 	if (dict.warningColor !== undefined) {
@@ -1824,7 +1839,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.alarmColor !== undefined) {
 		settings.alarmColor = rgbIntToClayColor(
 			dict.alarmColor.value,
-			"0xAA0000"
+			"0xFF0000"
 		);
 	}
 	if (dict.pollIntervalMinutes !== undefined) {
@@ -1843,6 +1858,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	}
 
 	saveSettings();
+	logCurrentColorDefaults();
 
 	// Reset session on credential change
 	authToken = null;
@@ -1859,6 +1875,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 Pebble.addEventListener("ready", function () {
 	console.log("LibreLinkUp PebbleKit JS ready");
 	loadSettings();
+	logCurrentColorDefaults();
 	loadAlarmState();
 	fetchData();
 });

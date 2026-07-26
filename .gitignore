@@ -18,3 +18,5 @@ npm-debug.log*
 
 # Emulator settings (contains credentials)
 emu-settings.json
+__pycache__/
+*.pyc

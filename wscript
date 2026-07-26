@@ -1,5 +1,5 @@
 #
-# OpenLibreLinkUp - Build Configuration
+# T1000 CGM Watchface - Build Configuration
 #
 
 top = '.'
@@ -14,6 +14,7 @@ def configure(ctx):
 def build(ctx):
     ctx.load('pebble_sdk')
 
+    build_worker = False
     binaries = []
 
     for p in ctx.env.TARGET_PLATFORMS:
