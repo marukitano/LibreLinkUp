@@ -41,7 +41,7 @@
 
 // Alert types
 #define ALERT_NONE        0
-#define ALERT_LOW_SOON    1
+#define ALERT_LOW    1
 #define ALERT_HIGH        2
 
 // Chart configuration
@@ -166,7 +166,7 @@ static void sync_stop_timer_callback(void *data);
 static void start_sync_spinner(void);
 static void stop_sync_spinner(void);
 static void update_alert_visibility(void);
-static void trigger_low_soon_alarm(void);
+static void trigger_low_alarm(void);
 static void trigger_high_alarm(void);
 
 /**
@@ -282,11 +282,11 @@ static void sync_layer_update_proc(Layer *layer, GContext *ctx) {
 }
 
 /**
- * Trigger the low-soon alarm.
+ * Trigger the low-glucose alarm.
  * Pebble Time 2 uses its speaker; muted or speaker-less models fall back
  * to the existing vibration pattern.
  */
-static void trigger_low_soon_alarm(void) {
+static void trigger_low_alarm(void) {
 #ifdef PBL_SPEAKER
     if (!speaker_is_muted()) {
         static const SpeakerNote notes[] = {
@@ -328,7 +328,7 @@ static void trigger_low_soon_alarm(void) {
         };
 
         speaker_play_notes(notes, ARRAY_LENGTH(notes), 90);
-        APP_LOG(APP_LOG_LEVEL_INFO, "Low soon acoustic alarm triggered");
+        APP_LOG(APP_LOG_LEVEL_INFO, "Low acoustic alarm triggered");
         return;
     }
 #endif
@@ -340,7 +340,7 @@ static void trigger_low_soon_alarm(void) {
         .durations = pattern,
         .num_segments = ARRAY_LENGTH(pattern)
     });
-    APP_LOG(APP_LOG_LEVEL_INFO, "Low soon vibration fallback triggered");
+    APP_LOG(APP_LOG_LEVEL_INFO, "Low vibration fallback triggered");
 }
 
 /**
@@ -1231,9 +1231,6 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
 
     // Draw low/high threshold lines only when they fall within the visible
     // dynamic chart range.
-    int dash_length = 6;
-    int gap_length = 4;
-
 #ifdef PBL_COLOR
     graphics_context_set_stroke_color(ctx, GColorLightGray);
 #else
@@ -1245,12 +1242,11 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
                     ((s_low_threshold - plot_min) * chart_height /
                      (plot_max - plot_min));
 
-        for (int x = chart_left; x < chart_right;
-             x += dash_length + gap_length) {
-            int end_x = x + dash_length - 1;
-            if (end_x > chart_right) end_x = chart_right;
-            graphics_draw_line(ctx, GPoint(x, low_y), GPoint(end_x, low_y));
-        }
+        graphics_draw_line(
+            ctx,
+            GPoint(chart_left, low_y),
+            GPoint(chart_right, low_y)
+        );
     }
 
     if (s_high_threshold >= plot_min && s_high_threshold <= plot_max) {
@@ -1258,12 +1254,11 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
                      ((s_high_threshold - plot_min) * chart_height /
                       (plot_max - plot_min));
 
-        for (int x = chart_left; x < chart_right;
-             x += dash_length + gap_length) {
-            int end_x = x + dash_length - 1;
-            if (end_x > chart_right) end_x = chart_right;
-            graphics_draw_line(ctx, GPoint(x, high_y), GPoint(end_x, high_y));
-        }
+        graphics_draw_line(
+            ctx,
+            GPoint(chart_left, high_y),
+            GPoint(chart_right, high_y)
+        );
     }
 
 // Use exactly the same stroke color and one-pixel thickness as the
@@ -1914,8 +1909,8 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     Tuple *alert_tuple = dict_find(iterator, KEY_CGM_ALERT);
     if (alert_tuple) {
         uint8_t alert_type = alert_tuple->value->uint8;
-        if (alert_type == ALERT_LOW_SOON) {
-            trigger_low_soon_alarm();
+        if (alert_type == ALERT_LOW) {
+            trigger_low_alarm();
         } else if (alert_type == ALERT_HIGH) {
             trigger_high_alarm();
         }

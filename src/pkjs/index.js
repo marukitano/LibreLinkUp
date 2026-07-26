@@ -64,12 +64,12 @@ function customClay(minified) {
 				["lowThresholdMmol", "lowThresholdMgdl"],
 				["highThresholdMmol", "highThresholdMgdl"],
 				[
-					"vibeLowSoonThresholdMmol",
-					"vibeLowSoonThresholdMgdl"
+					"lowAlarmThresholdMmol",
+					"lowAlarmThresholdMgdl"
 				],
 				[
-					"vibeHighThresholdMmol",
-					"vibeHighThresholdMgdl"
+					"highAlarmThresholdMmol",
+					"highAlarmThresholdMgdl"
 				]
 			];
 
@@ -189,15 +189,11 @@ function customClay(minified) {
 					goodColor: 0x00AA55,
 					warningColor: 0xFFAA00,
 					alarmColor: 0xFF0000,
-					vibeLowSoonEnabled: false,
-					vibeLowSoonThresholdMmol: "3.9",
-					vibeLowSoonThresholdMgdl: "70",
-					vibeLowSoonRepeatMinutes: 30,
-					vibeEnabled: false,
-					vibeHighThresholdMmol: "13.9",
-					vibeHighThresholdMgdl: "250",
-					vibeDelayMinutes: 60,
-					vibeRepeatMinutes: 60
+					acousticAlarmEnabled: false,
+					lowAlarmThresholdMmol: "3.9",
+					lowAlarmThresholdMgdl: "70",
+					highAlarmThresholdMmol: "13.9",
+					highAlarmThresholdMgdl: "250"
 				};
 
 				for (var key in defaults) {
@@ -292,59 +288,50 @@ var settings = {
 	quickView: false,
 	highThreshold: 180,
 	lowThreshold: 80,
-	vibeLowSoonEnabled: false,
-	vibeLowSoonThreshold: 70,
-	vibeLowSoonRepeatMinutes: 30,
-	vibeEnabled: false,
-	vibeHighThreshold: 250,
-	vibeDelayMinutes: 60,
-	vibeRepeatMinutes: 60,
+	acousticAlarmEnabled: false,
+	lowAlarmThreshold: 70,
+	highAlarmThreshold: 250,
 	goodColor: "0x00AA55",
 	warningColor: "0xFFAA00",
 	alarmColor: "0xFF0000",
 	pollIntervalMinutes: 5
 };
 
-// Alarm timing state (legacy variable/storage names retained for settings compatibility)
-var vibeHighConditionStartTime = null;
-var lastHighVibeTime = null;
-var lastLowSoonVibeTime = null;
+// Timestamp of the newest reading already evaluated for an alarm.
+var lastEvaluatedAlarmReadingTimestamp = null;
 
 /**
- * Load persisted alarm timing state from localStorage
+ * Load the last reading timestamp that was evaluated for an alarm.
+ * This prevents duplicate alarms when the same LibreLinkUp reading is fetched again.
  */
-function loadVibeState() {
-	var stored = localStorage.getItem("vibe-state");
+function loadAlarmState() {
+	var stored =
+		localStorage.getItem("last-alarm-reading-timestamp");
+
 	if (stored) {
-		try {
-			var parsed = JSON.parse(stored);
-			vibeHighConditionStartTime = parsed.vibeHighConditionStartTime || null;
-			lastHighVibeTime = parsed.lastHighVibeTime || null;
-			lastLowSoonVibeTime = parsed.lastLowSoonVibeTime || null;
-			console.log(
-				"Vibe state loaded: highStart=" +
-					vibeHighConditionStartTime +
-					", lastHigh=" +
-					lastHighVibeTime +
-					", lastLowSoon=" +
-					lastLowSoonVibeTime
-			);
-		} catch (e) {
-			console.log("Error parsing vibe state: " + e);
+		var parsed = parseInt(stored, 10);
+		if (isFinite(parsed)) {
+			lastEvaluatedAlarmReadingTimestamp = parsed;
 		}
 	}
+
+	// Remove obsolete prediction/delay/repeat state from older versions.
+	localStorage.removeItem("vibe-state");
 }
 
 /**
- * Save alarm timing state to localStorage
+ * Persist the last evaluated reading timestamp.
  */
-function saveVibeState() {
-	var state = {
-		vibeHighConditionStartTime: vibeHighConditionStartTime,
-		lastHighVibeTime: lastHighVibeTime,
-		lastLowSoonVibeTime: lastLowSoonVibeTime
-	};
-	localStorage.setItem("vibe-state", JSON.stringify(state));
+function saveAlarmState() {
+	if (lastEvaluatedAlarmReadingTimestamp === null) {
+		localStorage.removeItem("last-alarm-reading-timestamp");
+		return;
+	}
+
+	localStorage.setItem(
+		"last-alarm-reading-timestamp",
+		String(lastEvaluatedAlarmReadingTimestamp)
+	);
 }
 
 /**
@@ -403,7 +390,7 @@ function getCachedReadings() {
 
 // Alert types to send to watch
 var ALERT_NONE = 0;
-var ALERT_LOW_SOON = 1;
+var ALERT_LOW = 1;
 var ALERT_HIGH = 2;
 var pendingAlert = ALERT_NONE;
 
@@ -423,6 +410,39 @@ function loadSettings() {
 					settings[key] = parsed[key];
 				}
 			}
+
+			var migratedAlarmSettings = false;
+
+			if (
+				parsed.lowAlarmThreshold === undefined &&
+				parsed.vibeLowSoonThreshold !== undefined
+			) {
+				settings.lowAlarmThreshold =
+					parsed.vibeLowSoonThreshold;
+				migratedAlarmSettings = true;
+			}
+
+			if (
+				parsed.highAlarmThreshold === undefined &&
+				parsed.vibeHighThreshold !== undefined
+			) {
+				settings.highAlarmThreshold =
+					parsed.vibeHighThreshold;
+				migratedAlarmSettings = true;
+			}
+
+			if (parsed.acousticAlarmEnabled === undefined) {
+				settings.acousticAlarmEnabled =
+					!!parsed.vibeLowSoonEnabled ||
+					!!parsed.vibeEnabled;
+				migratedAlarmSettings = true;
+			}
+
+			if (migratedAlarmSettings) {
+				saveSettings();
+				console.log("Migrated legacy alarm settings");
+			}
+
 			console.log("Settings loaded - accountName: " + (settings.accountName ? "[set]" : "[empty]"));
 		} catch (e) {
 			console.log("Error parsing settings: " + e);
@@ -1166,10 +1186,13 @@ function processReadings(readings, fromCache) {
 	// Update last good reading time for smart polling
 	lastGoodReadingTime = latestTimestamp;
 
-	// Check alarm conditions (sets pendingAlert if needed)
+	// Evaluate the current value once for every genuinely new reading.
 	pendingAlert = ALERT_NONE;
-	checkLowSoonAlert(readings);
-	checkHighAlert(latestValue);
+	checkCurrentAlarm(
+		latestValue,
+		latestTimestamp,
+		!!fromCache
+	);
 
 	// Send data to watch
 	var message = {};
@@ -1181,8 +1204,8 @@ function processReadings(readings, fromCache) {
 	message[KEY_CGM_ALERT] = pendingAlert;
 	message[KEY_LOW_THRESHOLD] = settings.lowThreshold;
 	message[KEY_HIGH_THRESHOLD] = settings.highThreshold;
-	message[KEY_LOW_ALARM_THRESHOLD] = settings.vibeLowSoonThreshold;
-	message[KEY_HIGH_ALARM_THRESHOLD] = settings.vibeHighThreshold;
+	message[KEY_LOW_ALARM_THRESHOLD] = settings.lowAlarmThreshold;
+	message[KEY_HIGH_ALARM_THRESHOLD] = settings.highAlarmThreshold;
 	message[KEY_GOOD_COLOR] = colorToRgbInt(settings.goodColor, "0x00AA55");
 	message[KEY_WARNING_COLOR] = colorToRgbInt(settings.warningColor, "0xFFAA00");
 	message[KEY_ALARM_COLOR] = colorToRgbInt(settings.alarmColor, "0xFF0000");
@@ -1236,168 +1259,49 @@ function processReadings(readings, fromCache) {
 }
 
 /**
- * Calculate weighted average velocity from recent readings
- * Uses multiple time spans with heavier weighting on recent changes
- * Returns velocity in mg/dL per 5 minutes, or null if insufficient data or gaps detected
+ * Trigger one alarm for every new measurement in the configured alarm range.
+ *
+ * There is no prediction, delay or repeat timer. Re-fetching the same
+ * LibreLinkUp measurement does not trigger a duplicate alarm.
  */
-function calculateVelocity(readings) {
-	// Need at least 5 readings to calculate velocity
-	if (!readings || readings.length < 5) {
-		return null;
-	}
-
-	// Check that the first 5 values are valid (non-zero) and have no gaps
-	// Each reading should be ~5 minutes apart; allow up to 7 minutes to account for slight delays
-	var maxGapMs = 7 * 60 * 1000; // 7 minutes in milliseconds
-	for (var i = 0; i < 5; i++) {
-		if (!readings[i] || readings[i].Value === 0) {
-			return null;
-		}
-		// Check gap between consecutive readings (except for the last one)
-		if (i < 4) {
-			var thisTime = parseReadingTimestamp(readings[i].WT);
-			var nextTime = parseReadingTimestamp(readings[i + 1].WT);
-			if (!thisTime || !nextTime) {
-				return null;
-			}
-			var gap = thisTime - nextTime; // readings are most-recent-first
-			if (gap > maxGapMs) {
-				console.log(
-					"Velocity calculation skipped: gap of " +
-						Math.round(gap / 60000) +
-						" min between readings " +
-						i +
-						" and " +
-						(i + 1)
-				);
-				return null;
-			}
-		}
-	}
-
-	var bg0 = readings[0].Value;
-	var bg1 = readings[1].Value;
-	var bg2 = readings[2].Value;
-	var bg3 = readings[3].Value;
-	var bg4 = readings[4].Value;
-
-	// Weigh newer values more heavily
-	var w1 = 0.29;
-	var w2 = 0.27;
-	var w3 = 0.23;
-	var w4 = 0.21;
-
-	// Calculate velocities over different time spans (per 5-minute interval)
-	var vel1 = bg0 - bg1; // 5-minute change
-	var vel2 = (bg0 - bg2) / 2.0; // 10-minute change, normalized to 5-min
-	var vel3 = (bg0 - bg3) / 3.0; // 15-minute change, normalized to 5-min
-	var vel4 = (bg0 - bg4) / 4.0; // 20-minute change, normalized to 5-min
-
-	// Calculate the weighted average velocity
-	var velocity = vel1 * w1 + vel2 * w2 + vel3 * w3 + vel4 * w4;
-
-	console.log("Weighted average velocity: " + velocity.toFixed(1) + " mg/dL per 5min");
-
-	return velocity;
-}
-
-/**
- * Check if "low soon" alert should trigger based on predicted value in 20 minutes
- * Uses weighted average velocity from recent readings for smoother prediction
- */
-function checkLowSoonAlert(readings) {
-	if (!settings.vibeLowSoonEnabled) {
+function checkCurrentAlarm(
+	value,
+	readingTimestamp,
+	fromCache
+) {
+	if (
+		!readingTimestamp ||
+		fromCache ||
+		readingTimestamp ===
+			lastEvaluatedAlarmReadingTimestamp
+	) {
 		return;
 	}
 
-	var velocity = calculateVelocity(readings);
-	if (velocity === null) {
-		console.log("Low soon alert: insufficient data for velocity calculation");
+	lastEvaluatedAlarmReadingTimestamp = readingTimestamp;
+	saveAlarmState();
+
+	if (!settings.acousticAlarmEnabled) {
 		return;
 	}
 
-	var currentValue = readings[0].Value;
-	// velocity is per 5 minutes, so multiply by 4 to get 20-minute prediction
-	var predictedValue = currentValue + velocity * 4;
-	var isLowSoon = predictedValue < settings.vibeLowSoonThreshold;
-	var now = Date.now();
-
-	if (isLowSoon) {
-		// Check if we should vibrate (first time or repeat interval passed)
-		var shouldVibe = false;
-		if (!lastLowSoonVibeTime) {
-			shouldVibe = true;
-		} else {
-			var timeSinceVibe = (now - lastLowSoonVibeTime) / 60000; // minutes
-			if (timeSinceVibe >= settings.vibeLowSoonRepeatMinutes) {
-				shouldVibe = true;
-			}
-		}
-
-		if (shouldVibe) {
-			console.log(
-				"Triggering low soon alarm (current: " +
-					currentValue +
-					", predicted: " +
-					Math.round(predictedValue) +
-					" in 20min)"
-			);
-			pendingAlert = ALERT_LOW_SOON;
-			lastLowSoonVibeTime = now;
-			saveVibeState();
-		}
-	}
-	// Note: We intentionally do NOT reset lastLowSoonVibeTime when the condition clears.
-	// This ensures that if the user briefly rises above the threshold and then falls back,
-	// they won't get repeated alerts within the repeat interval.
-}
-
-/**
- * Check if high alarm should trigger
- */
-function checkHighAlert(value) {
-	if (!settings.vibeEnabled) {
+	if (value <= settings.lowAlarmThreshold) {
+		console.log(
+			"Triggering low alarm for new reading: " +
+				value +
+				" mg/dL"
+		);
+		pendingAlert = ALERT_LOW;
 		return;
 	}
 
-	var isHighAlert = value >= settings.vibeHighThreshold;
-	var now = Date.now();
-
-	if (isHighAlert) {
-		// Start tracking condition if not already
-		if (!vibeHighConditionStartTime) {
-			vibeHighConditionStartTime = now;
-		}
-
-		var conditionDuration = (now - vibeHighConditionStartTime) / 60000; // minutes
-
-		// Check if delay has passed
-		if (conditionDuration >= settings.vibeDelayMinutes) {
-			// Check if we should vibrate (first time or repeat interval passed)
-			var shouldVibe = false;
-			if (!lastHighVibeTime) {
-				shouldVibe = true;
-			} else {
-				var timeSinceVibe = (now - lastHighVibeTime) / 60000; // minutes
-				if (timeSinceVibe >= settings.vibeRepeatMinutes) {
-					shouldVibe = true;
-				}
-			}
-
-			if (shouldVibe) {
-				console.log("Triggering high alarm");
-				pendingAlert = ALERT_HIGH;
-				lastHighVibeTime = now;
-				saveVibeState();
-			}
-		}
-	} else {
-		// Reset condition start time when condition clears (so delay timer restarts)
-		// but keep lastHighVibeTime to prevent repeated alerts within repeat interval
-		if (vibeHighConditionStartTime !== null) {
-			vibeHighConditionStartTime = null;
-			saveVibeState();
-		}
+	if (value >= settings.highAlarmThreshold) {
+		console.log(
+			"Triggering high alarm for new reading: " +
+				value +
+				" mg/dL"
+		);
+		pendingAlert = ALERT_HIGH;
 	}
 }
 
@@ -1505,15 +1409,11 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		highThresholdMmol: thresholdForSettings(settings.highThreshold),
 		lowThresholdMgdl: settings.lowThreshold,
 		highThresholdMgdl: settings.highThreshold,
-		vibeLowSoonEnabled: settings.vibeLowSoonEnabled,
-		vibeLowSoonThresholdMmol: thresholdForSettings(settings.vibeLowSoonThreshold),
-		vibeLowSoonThresholdMgdl: settings.vibeLowSoonThreshold,
-		vibeLowSoonRepeatMinutes: settings.vibeLowSoonRepeatMinutes,
-		vibeEnabled: settings.vibeEnabled,
-		vibeHighThresholdMmol: thresholdForSettings(settings.vibeHighThreshold),
-		vibeHighThresholdMgdl: settings.vibeHighThreshold,
-		vibeDelayMinutes: settings.vibeDelayMinutes,
-		vibeRepeatMinutes: settings.vibeRepeatMinutes,
+		acousticAlarmEnabled: settings.acousticAlarmEnabled,
+		lowAlarmThresholdMmol: thresholdForSettings(settings.lowAlarmThreshold),
+		lowAlarmThresholdMgdl: settings.lowAlarmThreshold,
+		highAlarmThresholdMmol: thresholdForSettings(settings.highAlarmThreshold),
+		highAlarmThresholdMgdl: settings.highAlarmThreshold,
 		goodColor: settings.goodColor,
 		warningColor: settings.warningColor,
 		alarmColor: settings.alarmColor,
@@ -1575,35 +1475,34 @@ Pebble.addEventListener("webviewclosed", function (e) {
 			80
 		);
 	}
-	if (dict.vibeLowSoonEnabled !== undefined) settings.vibeLowSoonEnabled = !!dict.vibeLowSoonEnabled.value;
+	if (dict.acousticAlarmEnabled !== undefined) {
+		settings.acousticAlarmEnabled =
+			!!dict.acousticAlarmEnabled.value;
+	}
+
 	var lowAlarmField =
 		selectedThresholdUnit === "mgdl"
-			? dict.vibeLowSoonThresholdMgdl
-			: dict.vibeLowSoonThresholdMmol;
+			? dict.lowAlarmThresholdMgdl
+			: dict.lowAlarmThresholdMmol;
 	if (lowAlarmField !== undefined) {
-		settings.vibeLowSoonThreshold = thresholdInputToMgdl(
+		settings.lowAlarmThreshold = thresholdInputToMgdl(
 			lowAlarmField.value,
 			selectedThresholdUnit,
 			70
 		);
 	}
-	if (dict.vibeLowSoonRepeatMinutes !== undefined)
-		settings.vibeLowSoonRepeatMinutes = parseInt(dict.vibeLowSoonRepeatMinutes.value, 10) || 30;
-	if (dict.vibeEnabled !== undefined) settings.vibeEnabled = !!dict.vibeEnabled.value;
+
 	var highAlarmField =
 		selectedThresholdUnit === "mgdl"
-			? dict.vibeHighThresholdMgdl
-			: dict.vibeHighThresholdMmol;
+			? dict.highAlarmThresholdMgdl
+			: dict.highAlarmThresholdMmol;
 	if (highAlarmField !== undefined) {
-		settings.vibeHighThreshold = thresholdInputToMgdl(
+		settings.highAlarmThreshold = thresholdInputToMgdl(
 			highAlarmField.value,
 			selectedThresholdUnit,
 			250
 		);
 	}
-	if (dict.vibeDelayMinutes !== undefined) settings.vibeDelayMinutes = parseInt(dict.vibeDelayMinutes.value, 10) || 60;
-	if (dict.vibeRepeatMinutes !== undefined)
-		settings.vibeRepeatMinutes = parseInt(dict.vibeRepeatMinutes.value, 10) || 60;
 	if (dict.goodColor !== undefined) {
 		settings.goodColor = rgbIntToClayColor(
 			dict.goodColor.value,
@@ -1644,7 +1543,7 @@ Pebble.addEventListener("webviewclosed", function (e) {
 Pebble.addEventListener("ready", function () {
 	console.log("LibreLinkUp PebbleKit JS ready");
 	loadSettings();
-	loadVibeState();
+	loadAlarmState();
 	fetchData();
 });
 
