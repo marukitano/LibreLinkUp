@@ -52,6 +52,7 @@
 #define CHART_DISPLAY_HOURS 5  // four previous full hours plus the current hour
 #define CHART_LEFT_GUTTER 32   // room for min/max in the same font as hour labels
 #define CHART_EDGE_MARGIN 4
+#define CHART_MIN_SPAN_MGDL 54  // about 3.0 mmol/L
 
 // Display layout constants for Pebble Time 2 (200x228)
 #define SCREEN_WIDTH       200
@@ -1154,7 +1155,24 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
     int plot_min = raw_min - scale_padding;
     int plot_max = raw_max + scale_padding;
 
+    // Keep small fluctuations visually proportional. Without a minimum span,
+    // values such as 6.0 to 7.0 mmol/L would fill almost the entire chart.
+    // The chart remains dynamic, but never zooms in below about 3.0 mmol/L.
+    int plot_span = plot_max - plot_min;
+
+    if (plot_span < CHART_MIN_SPAN_MGDL) {
+        int missing_span = CHART_MIN_SPAN_MGDL - plot_span;
+        int extend_below = missing_span / 2;
+        int extend_above = missing_span - extend_below;
+
+        plot_min -= extend_below;
+        plot_max += extend_above;
+    }
+
+    // Glucose values cannot be negative. Shift the complete range upward
+    // instead of shortening the configured minimum span.
     if (plot_min < 1) {
+        plot_max += 1 - plot_min;
         plot_min = 1;
     }
 
