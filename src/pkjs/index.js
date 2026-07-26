@@ -15,6 +15,150 @@ function customClay(minified) {
 	clayConfigPage.on(
 		clayConfigPage.EVENTS.AFTER_BUILD,
 		function () {
+			var accountButton =
+				clayConfigPage.getItemById("toggle-account-settings");
+			var accountItems =
+				clayConfigPage.getItemsByGroup("account-settings");
+			var accountSettingsVisible = false;
+
+			function updateAccountSettingsVisibility() {
+				for (var i = 0; i < accountItems.length; i++) {
+					if (accountSettingsVisible) {
+						accountItems[i].show();
+					} else {
+						accountItems[i].hide();
+					}
+				}
+
+				if (accountButton) {
+					accountButton.set(
+						accountSettingsVisible
+							? "Hide Account Settings"
+							: "Show Account Settings"
+					);
+				}
+			}
+
+			updateAccountSettingsVisibility();
+
+			if (accountButton) {
+				accountButton.on("click", function () {
+					accountSettingsVisible =
+						!accountSettingsVisible;
+					updateAccountSettingsVisibility();
+				});
+			}
+
+			var unitItem =
+				clayConfigPage.getItemByMessageKey("unit");
+			var mmolThresholdItems =
+				clayConfigPage.getItemsByGroup("threshold-unit-mmol");
+			var mgdlThresholdItems =
+				clayConfigPage.getItemsByGroup("threshold-unit-mgdl");
+			var activeThresholdUnit =
+				unitItem && unitItem.get() === "mgdl"
+					? "mgdl"
+					: "mmol";
+
+			var thresholdPairs = [
+				["lowThresholdMmol", "lowThresholdMgdl"],
+				["highThresholdMmol", "highThresholdMgdl"],
+				[
+					"vibeLowSoonThresholdMmol",
+					"vibeLowSoonThresholdMgdl"
+				],
+				[
+					"vibeHighThresholdMmol",
+					"vibeHighThresholdMgdl"
+				]
+			];
+
+			function setThresholdGroupVisible(items, visible) {
+				for (var i = 0; i < items.length; i++) {
+					if (visible) {
+						items[i].show();
+					} else {
+						items[i].hide();
+					}
+				}
+			}
+
+			function updateThresholdUnitVisibility() {
+				setThresholdGroupVisible(
+					mmolThresholdItems,
+					activeThresholdUnit === "mmol"
+				);
+				setThresholdGroupVisible(
+					mgdlThresholdItems,
+					activeThresholdUnit === "mgdl"
+				);
+			}
+
+			function convertThresholdValue(
+				value,
+				fromUnit,
+				toUnit
+			) {
+				var parsed = parseFloat(value);
+
+				if (!isFinite(parsed) || fromUnit === toUnit) {
+					return value;
+				}
+
+				if (fromUnit === "mmol") {
+					return String(Math.round(parsed * 18.0182));
+				}
+
+				return (parsed / 18.0182).toFixed(1);
+			}
+
+			function syncThresholdValues(fromUnit, toUnit) {
+				for (var i = 0; i < thresholdPairs.length; i++) {
+					var mmolItem =
+						clayConfigPage.getItemByMessageKey(
+							thresholdPairs[i][0]
+						);
+					var mgdlItem =
+						clayConfigPage.getItemByMessageKey(
+							thresholdPairs[i][1]
+						);
+					var sourceItem =
+						fromUnit === "mmol" ? mmolItem : mgdlItem;
+					var targetItem =
+						toUnit === "mmol" ? mmolItem : mgdlItem;
+
+					if (!sourceItem || !targetItem) {
+						continue;
+					}
+
+					targetItem.set(
+						convertThresholdValue(
+							sourceItem.get(),
+							fromUnit,
+							toUnit
+						)
+					);
+				}
+			}
+
+			updateThresholdUnitVisibility();
+
+			if (unitItem) {
+				unitItem.on("change", function () {
+					var selectedUnit =
+						this.get() === "mgdl" ? "mgdl" : "mmol";
+
+					if (selectedUnit !== activeThresholdUnit) {
+						syncThresholdValues(
+							activeThresholdUnit,
+							selectedUnit
+						);
+						activeThresholdUnit = selectedUnit;
+						updateThresholdUnitVisibility();
+					}
+				});
+			}
+
 			var restoreButton =
 				clayConfigPage.getItemById("restore-defaults");
 
@@ -40,14 +184,18 @@ function customClay(minified) {
 					pollIntervalMinutes: 5,
 					lowThresholdMmol: "4.4",
 					highThresholdMmol: "10.0",
+					lowThresholdMgdl: "80",
+					highThresholdMgdl: "180",
 					goodColor: 0x00AA55,
 					warningColor: 0xFFAA00,
 					alarmColor: 0xFF0000,
 					vibeLowSoonEnabled: false,
 					vibeLowSoonThresholdMmol: "3.9",
+					vibeLowSoonThresholdMgdl: "70",
 					vibeLowSoonRepeatMinutes: 30,
 					vibeEnabled: false,
 					vibeHighThresholdMmol: "13.9",
+					vibeHighThresholdMgdl: "250",
 					vibeDelayMinutes: 60,
 					vibeRepeatMinutes: 60
 				};
@@ -334,11 +482,21 @@ function thresholdForSettings(mgdl) {
 /**
  * Convert a threshold entered in the selected unit back to internal mg/dL.
  */
-function thresholdToMgdl(value, fallbackMgdl) {
+function thresholdInputToMgdl(
+	value,
+	unit,
+	fallbackMgdl
+) {
 	var parsed = parseFloat(value);
+
 	if (!isFinite(parsed)) {
 		return fallbackMgdl;
 	}
+
+	if (unit === "mgdl") {
+		return Math.round(parsed);
+	}
+
 	return Math.round(parsed * 18.0182);
 }
 
@@ -1345,11 +1503,15 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		quickView: settings.quickView,
 		lowThresholdMmol: thresholdForSettings(settings.lowThreshold),
 		highThresholdMmol: thresholdForSettings(settings.highThreshold),
+		lowThresholdMgdl: settings.lowThreshold,
+		highThresholdMgdl: settings.highThreshold,
 		vibeLowSoonEnabled: settings.vibeLowSoonEnabled,
 		vibeLowSoonThresholdMmol: thresholdForSettings(settings.vibeLowSoonThreshold),
+		vibeLowSoonThresholdMgdl: settings.vibeLowSoonThreshold,
 		vibeLowSoonRepeatMinutes: settings.vibeLowSoonRepeatMinutes,
 		vibeEnabled: settings.vibeEnabled,
 		vibeHighThresholdMmol: thresholdForSettings(settings.vibeHighThreshold),
+		vibeHighThresholdMgdl: settings.vibeHighThreshold,
 		vibeDelayMinutes: settings.vibeDelayMinutes,
 		vibeRepeatMinutes: settings.vibeRepeatMinutes,
 		goodColor: settings.goodColor,
@@ -1387,18 +1549,58 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.unit !== undefined) settings.unit = dict.unit.value || "mgdl";
 	if (dict.reversed !== undefined) settings.reversed = !!dict.reversed.value;
 	if (dict.quickView !== undefined) settings.quickView = !!dict.quickView.value;
-	if (dict.highThresholdMmol !== undefined)
-		settings.highThreshold = thresholdToMgdl(dict.highThresholdMmol.value, 180);
-	if (dict.lowThresholdMmol !== undefined)
-		settings.lowThreshold = thresholdToMgdl(dict.lowThresholdMmol.value, 70);
+
+	var selectedThresholdUnit =
+		settings.unit === "mgdl" ? "mgdl" : "mmol";
+	var lowWarningField =
+		selectedThresholdUnit === "mgdl"
+			? dict.lowThresholdMgdl
+			: dict.lowThresholdMmol;
+	var highWarningField =
+		selectedThresholdUnit === "mgdl"
+			? dict.highThresholdMgdl
+			: dict.highThresholdMmol;
+
+	if (highWarningField !== undefined) {
+		settings.highThreshold = thresholdInputToMgdl(
+			highWarningField.value,
+			selectedThresholdUnit,
+			180
+		);
+	}
+	if (lowWarningField !== undefined) {
+		settings.lowThreshold = thresholdInputToMgdl(
+			lowWarningField.value,
+			selectedThresholdUnit,
+			80
+		);
+	}
 	if (dict.vibeLowSoonEnabled !== undefined) settings.vibeLowSoonEnabled = !!dict.vibeLowSoonEnabled.value;
-	if (dict.vibeLowSoonThresholdMmol !== undefined)
-		settings.vibeLowSoonThreshold = thresholdToMgdl(dict.vibeLowSoonThresholdMmol.value, 80);
+	var lowAlarmField =
+		selectedThresholdUnit === "mgdl"
+			? dict.vibeLowSoonThresholdMgdl
+			: dict.vibeLowSoonThresholdMmol;
+	if (lowAlarmField !== undefined) {
+		settings.vibeLowSoonThreshold = thresholdInputToMgdl(
+			lowAlarmField.value,
+			selectedThresholdUnit,
+			70
+		);
+	}
 	if (dict.vibeLowSoonRepeatMinutes !== undefined)
 		settings.vibeLowSoonRepeatMinutes = parseInt(dict.vibeLowSoonRepeatMinutes.value, 10) || 30;
 	if (dict.vibeEnabled !== undefined) settings.vibeEnabled = !!dict.vibeEnabled.value;
-	if (dict.vibeHighThresholdMmol !== undefined)
-		settings.vibeHighThreshold = thresholdToMgdl(dict.vibeHighThresholdMmol.value, 250);
+	var highAlarmField =
+		selectedThresholdUnit === "mgdl"
+			? dict.vibeHighThresholdMgdl
+			: dict.vibeHighThresholdMmol;
+	if (highAlarmField !== undefined) {
+		settings.vibeHighThreshold = thresholdInputToMgdl(
+			highAlarmField.value,
+			selectedThresholdUnit,
+			250
+		);
+	}
 	if (dict.vibeDelayMinutes !== undefined) settings.vibeDelayMinutes = parseInt(dict.vibeDelayMinutes.value, 10) || 60;
 	if (dict.vibeRepeatMinutes !== undefined)
 		settings.vibeRepeatMinutes = parseInt(dict.vibeRepeatMinutes.value, 10) || 60;

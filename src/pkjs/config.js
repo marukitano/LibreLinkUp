@@ -11,8 +11,16 @@ module.exports = [
 				defaultValue: "LibreLinkUp Account"
 			},
 			{
+				type: "button",
+				id: "toggle-account-settings",
+				defaultValue: "Show Account Settings",
+				primary: false,
+				description: "Email, password and server region are hidden by default to prevent accidental changes while scrolling."
+			},
+			{
 				type: "input",
 				messageKey: "accountName",
+				group: "account-settings",
 				label: "Email",
 				attributes: {
 					placeholder: "LibreLinkUp email address",
@@ -23,6 +31,7 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "password",
+				group: "account-settings",
 				label: "Password",
 				attributes: {
 					placeholder: "LibreLinkUp password",
@@ -32,6 +41,7 @@ module.exports = [
 			{
 				type: "select",
 				messageKey: "server",
+				group: "account-settings",
 				label: "Server Region",
 				defaultValue: "europe",
 				options: [
@@ -89,6 +99,7 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "lowThresholdMmol",
+				group: "threshold-unit-mmol",
 				label: "Low Warning Threshold (mmol/L)",
 				defaultValue: 4.4,
 				attributes: {
@@ -101,6 +112,7 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "highThresholdMmol",
+				group: "threshold-unit-mmol",
 				label: "High Warning Threshold (mmol/L)",
 				defaultValue: 10.0,
 				attributes: {
@@ -111,8 +123,34 @@ module.exports = [
 				}
 			},
 			{
+				type: "input",
+				messageKey: "lowThresholdMgdl",
+				group: "threshold-unit-mgdl",
+				label: "Low Warning Threshold (mg/dL)",
+				defaultValue: 80,
+				attributes: {
+					type: "number",
+					step: "1",
+					min: "36",
+					max: "360"
+				}
+			},
+			{
+				type: "input",
+				messageKey: "highThresholdMgdl",
+				group: "threshold-unit-mgdl",
+				label: "High Warning Threshold (mg/dL)",
+				defaultValue: 180,
+				attributes: {
+					type: "number",
+					step: "1",
+					min: "36",
+					max: "360"
+				}
+			},
+			{
 				type: "text",
-				defaultValue: "<small>The dashed lines mark the warning thresholds. Green is inside them, yellow is between a warning and alarm threshold, and red begins exactly at the alarm thresholds below. For a visible yellow zone, set the low alarm below the low warning and the high alarm above the high warning. Values are always entered in mmol/L.</small>"
+				defaultValue: "<small>Threshold fields automatically follow the selected glucose unit. Green is inside the warning thresholds, yellow is between warning and alarm thresholds, and red begins exactly at the alarm thresholds below.</small>"
 			}
 		]
 	},
@@ -163,6 +201,7 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "vibeLowSoonThresholdMmol",
+				group: "threshold-unit-mmol",
 				label: "Low Soon Alarm / Red Threshold (mmol/L)",
 				defaultValue: 3.9,
 				attributes: {
@@ -170,6 +209,19 @@ module.exports = [
 					step: "0.1",
 					min: "2.0",
 					max: "20.0"
+				}
+			},
+			{
+				type: "input",
+				messageKey: "vibeLowSoonThresholdMgdl",
+				group: "threshold-unit-mgdl",
+				label: "Low Soon Alarm / Red Threshold (mg/dL)",
+				defaultValue: 70,
+				attributes: {
+					type: "number",
+					step: "1",
+					min: "36",
+					max: "360"
 				}
 			},
 			{
@@ -203,6 +255,7 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "vibeHighThresholdMmol",
+				group: "threshold-unit-mmol",
 				label: "High Alarm / Red Threshold (mmol/L)",
 				defaultValue: 13.9,
 				attributes: {
@@ -210,6 +263,19 @@ module.exports = [
 					step: "0.1",
 					min: "2.0",
 					max: "20.0"
+				}
+			},
+			{
+				type: "input",
+				messageKey: "vibeHighThresholdMgdl",
+				group: "threshold-unit-mgdl",
+				label: "High Alarm / Red Threshold (mg/dL)",
+				defaultValue: 250,
+				attributes: {
+					type: "number",
+					step: "1",
+					min: "36",
+					max: "360"
 				}
 			},
 			{
