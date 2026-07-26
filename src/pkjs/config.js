@@ -58,7 +58,7 @@ module.exports = [
 					{ label: "20 minutes", value: 20 },
 					{ label: "30 minutes", value: 30 }
 				],
-				description: "The displayed delta is normalized to this interval. The arrow stays horizontal below 1 mg/dL per minute, points up at +1 mg/dL per minute or faster, and down at -1 mg/dL per minute or faster."
+				description: "The displayed delta is normalized to this interval. The arrow uses the one-decimal mmol/L equivalent: horizontal from -0.1 to +0.1, diagonal at +/-0.2, and vertical from +/-0.3."
 			}
 		]
 	},
@@ -73,7 +73,7 @@ module.exports = [
 				type: "color",
 				messageKey: "goodColor",
 				label: "Good Color",
-				defaultValue: "00AA55"
+				defaultValue: "00AA00"
 			},
 			{
 				type: "input",
@@ -159,7 +159,7 @@ module.exports = [
 				type: "color",
 				messageKey: "alarmColor",
 				label: "Alarm Color",
-				defaultValue: "FF0000"
+				defaultValue: "AA0000"
 			},
 			{
 				type: "input",

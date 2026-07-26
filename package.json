@@ -1,8 +1,8 @@
 {
   "name": "open-libre-link-up",
   "author": "Marukitano",
-  "version": "1.1.2",
-  "description": "Displays LibreLinkUp glucose data, trend, delta, age, alerts, and a rolling history chart on Pebble Time 2.",
+  "version": "1.2.0",
+  "description": "LibreLinkUp glucose watchface for Pebble Time 2 with trend, delta, alerts, Quick View, and a rolling chart.",
   "license": "MIT",
   "repository": {
     "type": "git",
