@@ -182,6 +182,7 @@ function customClay(minified) {
 					quickView: false,
 					unit: "mmol",
 					pollIntervalMinutes: 5,
+					deltaIntervalMinutes: 5,
 					lowThresholdMmol: "4.4",
 					highThresholdMmol: "10.0",
 					lowThresholdMgdl: "80",
@@ -294,7 +295,8 @@ var settings = {
 	goodColor: "0x00AA55",
 	warningColor: "0xFFAA00",
 	alarmColor: "0xFF0000",
-	pollIntervalMinutes: 5
+	pollIntervalMinutes: 5,
+	deltaIntervalMinutes: 5
 };
 
 // Timestamp of the newest reading already evaluated for an alarm.
@@ -618,7 +620,7 @@ function formatDelta(deltaMgdl) {
 	} else {
 		formatted = Math.round(deltaMgdl).toString();
 	}
-	if (deltaMgdl >= 0) {
+	if (deltaMgdl > 0) {
 		return "+" + formatted;
 	}
 	return formatted;
@@ -926,24 +928,89 @@ function libreFetchConnections() {
 }
 
 /**
- * Convert LibreLinkUp's numeric trend arrow to the names expected by
- * the existing watchface code.
+ * Calculate the glucose change over the configured interval.
+ *
+ * LibreLinkUp history points are usually spaced around five minutes apart,
+ * while the newest live reading may fall between those points. Therefore
+ * the reading closest to the requested interval is used. A maximum
+ * difference of three minutes prevents misleading deltas across data gaps.
  */
-function mapLibreTrend(trendArrow) {
-	switch (Number(trendArrow)) {
-		case 1:
-			return "DoubleDown";
-		case 2:
-			return "SingleDown";
-		case 3:
-			return "Flat";
-		case 4:
-			return "SingleUp";
-		case 5:
-			return "DoubleUp";
-		default:
-			return "None";
+function calculateDeltaForInterval(
+	readings,
+	intervalMinutes
+) {
+	if (!readings || readings.length < 2) {
+		return null;
 	}
+
+	var latest = readings[0];
+	var latestTimestamp = parseReadingTimestamp(latest.WT);
+
+	if (!latestTimestamp) {
+		return null;
+	}
+
+	var interval =
+		parseInt(intervalMinutes, 10) || 5;
+	var targetTimestamp =
+		latestTimestamp - interval * 60 * 1000;
+	var bestReading = null;
+	var bestTimestamp = null;
+	var bestDistance = Infinity;
+
+	for (var i = 1; i < readings.length; i++) {
+		var timestamp =
+			parseReadingTimestamp(readings[i].WT);
+
+		if (!timestamp || timestamp >= latestTimestamp) {
+			continue;
+		}
+
+		var distance =
+			Math.abs(timestamp - targetTimestamp);
+
+		if (distance < bestDistance) {
+			bestDistance = distance;
+			bestReading = readings[i];
+			bestTimestamp = timestamp;
+		}
+	}
+
+	var maxDistance = 3 * 60 * 1000;
+
+	if (!bestReading || bestDistance > maxDistance) {
+		console.log(
+			"No reading close enough for " +
+				interval +
+				"-minute delta"
+		);
+		return null;
+	}
+
+	return {
+		delta: latest.Value - bestReading.Value,
+		actualMinutes:
+			(latestTimestamp - bestTimestamp) / 60000
+	};
+}
+
+/**
+ * Derive the trend arrow from the same delta shown on the watch.
+ */
+function trendFromDelta(delta) {
+	if (delta === null || delta === undefined) {
+		return TREND_DIRECTIONS.None;
+	}
+
+	if (delta > 0) {
+		return TREND_DIRECTIONS.SingleUp;
+	}
+
+	if (delta < 0) {
+		return TREND_DIRECTIONS.SingleDown;
+	}
+
+	return TREND_DIRECTIONS.Flat;
 }
 
 /**
@@ -1075,8 +1142,7 @@ function normalizeLibreReadings(graphResponse) {
 
 		normalized.push({
 			Value: Math.round(value),
-			WT: "/Date(" + timestamp + ")/",
-			Trend: mapLibreTrend(reading.TrendArrow)
+			WT: "/Date(" + timestamp + ")/"
 		});
 	});
 
@@ -1150,29 +1216,32 @@ function processReadings(readings, fromCache) {
 	var latest = readings[0];
 	var latestValue = latest.Value;
 	var latestTimestamp = parseReadingTimestamp(latest.WT);
-	var latestTrendString = latest.Trend || "None";
-	var latestTrend = TREND_DIRECTIONS[latestTrendString] || 0;
-
-	// Handle numeric trend values from API
-	if (typeof latestTrendString === "number") {
-		latestTrend = latestTrendString > 7 ? 0 : latestTrendString;
-	}
 
 	// Calculate time ago
 	var now = Date.now();
 	var minutesAgo = Math.round((now - latestTimestamp) / 60000);
 
-	// Calculate delta (difference from previous reading)
-	var delta = 0;
-	if (readings.length > 1) {
-		var previousValue = readings[1].Value;
-		var previousTimestamp = parseReadingTimestamp(readings[1].WT);
-		var timeDiffMinutes = (latestTimestamp - previousTimestamp) / 60000;
+	// The displayed delta and trend arrow now use exactly the same
+	// configurable time interval and the same underlying readings.
+	var deltaInfo = calculateDeltaForInterval(
+		readings,
+		settings.deltaIntervalMinutes
+	);
+	var delta =
+		deltaInfo ? deltaInfo.delta : null;
+	var deltaText =
+		deltaInfo ? formatDelta(delta) : "--";
+	var latestTrend = trendFromDelta(delta);
 
-		// Normalize to 5-minute rate
-		if (timeDiffMinutes > 0) {
-			delta = ((latestValue - previousValue) / timeDiffMinutes) * 5;
-		}
+	if (deltaInfo) {
+		console.log(
+			"Delta interval: selected=" +
+				settings.deltaIntervalMinutes +
+				" min, actual=" +
+				deltaInfo.actualMinutes.toFixed(1) +
+				" min, delta=" +
+				deltaText
+		);
 	}
 
 	// Compact history: values only, most recent first.
@@ -1197,7 +1266,7 @@ function processReadings(readings, fromCache) {
 	// Send data to watch
 	var message = {};
 	message[KEY_CGM_VALUE] = formatGlucose(latestValue);
-	message[KEY_CGM_DELTA] = formatDelta(delta);
+	message[KEY_CGM_DELTA] = deltaText;
 	message[KEY_CGM_TREND] = latestTrend;
 	message[KEY_CGM_TIME_AGO] = minutesAgo;
 	message[KEY_CGM_HISTORY] = history;
@@ -1222,7 +1291,7 @@ function processReadings(readings, fromCache) {
 			formatGlucose(latestValue) +
 			"), " +
 			"delta=" +
-			formatDelta(delta) +
+			deltaText +
 			", trend=" +
 			latestTrend +
 			", " +
@@ -1417,7 +1486,8 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		goodColor: settings.goodColor,
 		warningColor: settings.warningColor,
 		alarmColor: settings.alarmColor,
-		pollIntervalMinutes: settings.pollIntervalMinutes
+		pollIntervalMinutes: settings.pollIntervalMinutes,
+		deltaIntervalMinutes: settings.deltaIntervalMinutes
 	};
 
 	clay.setSettings(claySettings);
@@ -1524,6 +1594,16 @@ Pebble.addEventListener("webviewclosed", function (e) {
 	if (dict.pollIntervalMinutes !== undefined) {
 		var pollInterval = parseInt(dict.pollIntervalMinutes.value, 10) || 5;
 		settings.pollIntervalMinutes = Math.max(1, Math.min(10, pollInterval));
+	}
+	if (dict.deltaIntervalMinutes !== undefined) {
+		var deltaInterval =
+			parseInt(dict.deltaIntervalMinutes.value, 10) || 5;
+		var supportedDeltaIntervals = [5, 10, 15, 20, 30];
+
+		settings.deltaIntervalMinutes =
+			supportedDeltaIntervals.indexOf(deltaInterval) >= 0
+				? deltaInterval
+				: 5;
 	}
 
 	saveSettings();

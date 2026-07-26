@@ -65,7 +65,8 @@ def main():
                     "goodColor": "0x00AA55",
                     "warningColor": "0xFFAA00",
                     "alarmColor": "0xFF0000",
-                    "pollIntervalMinutes": 5
+                    "pollIntervalMinutes": 5,
+                    "deltaIntervalMinutes": 5
                 },
                 indent=2
             ),

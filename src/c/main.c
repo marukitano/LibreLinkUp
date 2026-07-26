@@ -1165,6 +1165,105 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         show_min_label = raw_max - raw_min >= 4;
     }
 
+    // Draw warning and alarm threshold lines behind the extrema labels.
+    //
+    // Warning thresholds use the configured warning color.
+    // Alarm thresholds use the configured alarm color.
+    // The one-pixel filled rectangles are genuinely continuous.
+#ifdef PBL_COLOR
+    graphics_context_set_fill_color(ctx, s_warning_color);
+#else
+    graphics_context_set_fill_color(ctx, line_color);
+#endif
+
+    if (s_low_threshold >= plot_min && s_low_threshold <= plot_max) {
+        int low_warning_y =
+            bounds.origin.y + margin + chart_height -
+            ((s_low_threshold - plot_min) * chart_height /
+             (plot_max - plot_min));
+
+        graphics_fill_rect(
+            ctx,
+            GRect(
+                chart_left,
+                low_warning_y,
+                chart_right - chart_left + 1,
+                1
+            ),
+            0,
+            GCornerNone
+        );
+    }
+
+    if (s_high_threshold >= plot_min && s_high_threshold <= plot_max) {
+        int high_warning_y =
+            bounds.origin.y + margin + chart_height -
+            ((s_high_threshold - plot_min) * chart_height /
+             (plot_max - plot_min));
+
+        graphics_fill_rect(
+            ctx,
+            GRect(
+                chart_left,
+                high_warning_y,
+                chart_right - chart_left + 1,
+                1
+            ),
+            0,
+            GCornerNone
+        );
+    }
+
+#ifdef PBL_COLOR
+    graphics_context_set_fill_color(ctx, s_alarm_color);
+#else
+    graphics_context_set_fill_color(ctx, line_color);
+#endif
+
+    if (
+        s_low_alarm_threshold >= plot_min &&
+        s_low_alarm_threshold <= plot_max
+    ) {
+        int low_alarm_y =
+            bounds.origin.y + margin + chart_height -
+            ((s_low_alarm_threshold - plot_min) * chart_height /
+             (plot_max - plot_min));
+
+        graphics_fill_rect(
+            ctx,
+            GRect(
+                chart_left,
+                low_alarm_y,
+                chart_right - chart_left + 1,
+                1
+            ),
+            0,
+            GCornerNone
+        );
+    }
+
+    if (
+        s_high_alarm_threshold >= plot_min &&
+        s_high_alarm_threshold <= plot_max
+    ) {
+        int high_alarm_y =
+            bounds.origin.y + margin + chart_height -
+            ((s_high_alarm_threshold - plot_min) * chart_height /
+             (plot_max - plot_min));
+
+        graphics_fill_rect(
+            ctx,
+            GRect(
+                chart_left,
+                high_alarm_y,
+                chart_right - chart_left + 1,
+                1
+            ),
+            0,
+            GCornerNone
+        );
+    }
+
     // Clear only the area actually occupied by the text, plus one pixel.
     // This keeps the grid interruption small instead of blanking the complete
     // 24-pixel label rectangle.
@@ -1229,40 +1328,7 @@ static void chart_layer_update_proc(Layer *layer, GContext *ctx) {
         );
     }
 
-    // Draw low/high threshold lines only when they fall within the visible
-    // dynamic chart range.
-#ifdef PBL_COLOR
-    graphics_context_set_stroke_color(ctx, GColorLightGray);
-#else
-    graphics_context_set_stroke_color(ctx, line_color);
-#endif
-
-    if (s_low_threshold >= plot_min && s_low_threshold <= plot_max) {
-        int low_y = bounds.origin.y + margin + chart_height -
-                    ((s_low_threshold - plot_min) * chart_height /
-                     (plot_max - plot_min));
-
-        graphics_draw_line(
-            ctx,
-            GPoint(chart_left, low_y),
-            GPoint(chart_right, low_y)
-        );
-    }
-
-    if (s_high_threshold >= plot_min && s_high_threshold <= plot_max) {
-        int high_y = bounds.origin.y + margin + chart_height -
-                     ((s_high_threshold - plot_min) * chart_height /
-                      (plot_max - plot_min));
-
-        graphics_draw_line(
-            ctx,
-            GPoint(chart_left, high_y),
-            GPoint(chart_right, high_y)
-        );
-    }
-
-// Use exactly the same stroke color and one-pixel thickness as the
-    // horizontal low/high threshold lines.
+    // Draw the dotted min/max leader lines in neutral gray.
 #ifdef PBL_COLOR
     graphics_context_set_stroke_color(ctx, GColorLightGray);
 #else

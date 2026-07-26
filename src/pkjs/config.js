@@ -28,6 +28,20 @@ module.exports = [
 				min: 1,
 				max: 10,
 				step: 1
+			},
+			{
+				type: "select",
+				messageKey: "deltaIntervalMinutes",
+				label: "Delta Interval",
+				defaultValue: 5,
+				options: [
+					{ label: "5 minutes", value: 5 },
+					{ label: "10 minutes", value: 10 },
+					{ label: "15 minutes", value: 15 },
+					{ label: "20 minutes", value: 20 },
+					{ label: "30 minutes", value: 30 }
+				],
+				description: "The displayed delta compares the current glucose value with the reading closest to this interval. Positive delta = up arrow, negative delta = down arrow, zero = horizontal arrow."
 			}
 		]
 	},
