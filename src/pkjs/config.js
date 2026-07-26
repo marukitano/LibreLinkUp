@@ -89,8 +89,8 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "lowThresholdMmol",
-				label: "Low Threshold (mmol/L)",
-				defaultValue: 3.9,
+				label: "Low Warning Threshold (mmol/L)",
+				defaultValue: 4.4,
 				attributes: {
 					type: "number",
 					step: "0.1",
@@ -101,7 +101,7 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "highThresholdMmol",
-				label: "High Threshold (mmol/L)",
+				label: "High Warning Threshold (mmol/L)",
 				defaultValue: 10.0,
 				attributes: {
 					type: "number",
@@ -112,7 +112,7 @@ module.exports = [
 			},
 			{
 				type: "text",
-				defaultValue: "<small>The two grey dashed chart lines always use mmol/L values, regardless of the display unit.</small>"
+				defaultValue: "<small>The dashed lines mark the warning thresholds. Green is inside them, yellow is between a warning and alarm threshold, and red begins exactly at the alarm thresholds below. For a visible yellow zone, set the low alarm below the low warning and the high alarm above the high warning. Values are always entered in mmol/L.</small>"
 			}
 		]
 	},
@@ -143,7 +143,7 @@ module.exports = [
 			},
 			{
 				type: "text",
-				defaultValue: "<small>Good = between the limits. Warning = up to 2 mmol/L outside. Alarm = further outside.</small>"
+				defaultValue: "<small>Good = inside the warning range. Warning = between warning and alarm thresholds. Alarm = at or beyond the configured alarm thresholds.</small>"
 			}
 		]
 	},
@@ -163,8 +163,8 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "vibeLowSoonThresholdMmol",
-				label: "Low Soon Threshold (mmol/L)",
-				defaultValue: 4.4,
+				label: "Low Soon Alarm / Red Threshold (mmol/L)",
+				defaultValue: 3.9,
 				attributes: {
 					type: "number",
 					step: "0.1",
@@ -174,7 +174,7 @@ module.exports = [
 			},
 			{
 				type: "text",
-				defaultValue: "<small>Play a sound when predicted to be below this value in 20 minutes. If the watch is muted, vibration is used instead.</small>"
+				defaultValue: "<small>This value is also the exact red threshold for low chart points and Quick View. The alarm sounds when the glucose value is predicted to be below it in 20 minutes. If the watch is muted, vibration is used instead.</small>"
 			},
 			{
 				type: "slider",
@@ -203,7 +203,7 @@ module.exports = [
 			{
 				type: "input",
 				messageKey: "vibeHighThresholdMmol",
-				label: "High Alert Threshold (mmol/L)",
+				label: "High Alarm / Red Threshold (mmol/L)",
 				defaultValue: 13.9,
 				attributes: {
 					type: "number",
@@ -231,6 +231,13 @@ module.exports = [
 				step: 15
 			}
 		]
+	},
+	{
+		type: "button",
+		id: "restore-defaults",
+		defaultValue: "Restore Default Settings",
+		primary: false,
+		description: "Restores display, colors, thresholds and alarms. LibreLinkUp email, password and server region are kept. Press Save Settings afterwards."
 	},
 	{
 		type: "submit",

@@ -8,7 +8,78 @@
 // Import Clay for configuration
 var Clay = require("pebble-clay");
 var clayConfig = require("./config");
-var clay = new Clay(clayConfig, null, { autoHandleEvents: false });
+
+function customClay(minified) {
+	var clayConfigPage = this;
+
+	clayConfigPage.on(
+		clayConfigPage.EVENTS.AFTER_BUILD,
+		function () {
+			var restoreButton =
+				clayConfigPage.getItemById("restore-defaults");
+
+			if (!restoreButton) {
+				return;
+			}
+
+			restoreButton.on("click", function () {
+				if (
+					typeof confirm === "function" &&
+					!confirm(
+						"Restore all watchface settings to their defaults? " +
+						"LibreLinkUp account details will be kept."
+					)
+				) {
+					return;
+				}
+
+				var defaults = {
+					reversed: false,
+					quickView: false,
+					unit: "mmol",
+					pollIntervalMinutes: 5,
+					lowThresholdMmol: "4.4",
+					highThresholdMmol: "10.0",
+					goodColor: 0x00AA55,
+					warningColor: 0xFFAA00,
+					alarmColor: 0xFF0000,
+					vibeLowSoonEnabled: false,
+					vibeLowSoonThresholdMmol: "3.9",
+					vibeLowSoonRepeatMinutes: 30,
+					vibeEnabled: false,
+					vibeHighThresholdMmol: "13.9",
+					vibeDelayMinutes: 60,
+					vibeRepeatMinutes: 60
+				};
+
+				for (var key in defaults) {
+					if (!defaults.hasOwnProperty(key)) {
+						continue;
+					}
+
+					var item =
+						clayConfigPage.getItemByMessageKey(key);
+					if (item) {
+						item.set(defaults[key]);
+					}
+				}
+
+				if (typeof alert === "function") {
+					alert(
+						"Default settings restored. " +
+						"Press Save Settings to apply them."
+					);
+				}
+			});
+		}
+	);
+}
+
+var clay = new Clay(
+	clayConfig,
+	customClay,
+	{ autoHandleEvents: false }
+);
 
 // AppMessage keys (must match appinfo.json and main.c)
 var KEY_CGM_VALUE = 0;
@@ -28,6 +99,8 @@ var KEY_WARNING_COLOR = 14;
 var KEY_ALARM_COLOR = 15;
 var KEY_POLL_INTERVAL = 16;
 var KEY_QUICK_VIEW = 17;
+var KEY_LOW_ALARM_THRESHOLD = 18;
+var KEY_HIGH_ALARM_THRESHOLD = 19;
 
 // LibreLinkUp API endpoints
 var LIBRE_URLS = {
@@ -70,9 +143,9 @@ var settings = {
 	reversed: false,
 	quickView: false,
 	highThreshold: 180,
-	lowThreshold: 70,
+	lowThreshold: 80,
 	vibeLowSoonEnabled: false,
-	vibeLowSoonThreshold: 80,
+	vibeLowSoonThreshold: 70,
 	vibeLowSoonRepeatMinutes: 30,
 	vibeEnabled: false,
 	vibeHighThreshold: 250,
@@ -950,6 +1023,8 @@ function processReadings(readings, fromCache) {
 	message[KEY_CGM_ALERT] = pendingAlert;
 	message[KEY_LOW_THRESHOLD] = settings.lowThreshold;
 	message[KEY_HIGH_THRESHOLD] = settings.highThreshold;
+	message[KEY_LOW_ALARM_THRESHOLD] = settings.vibeLowSoonThreshold;
+	message[KEY_HIGH_ALARM_THRESHOLD] = settings.vibeHighThreshold;
 	message[KEY_GOOD_COLOR] = colorToRgbInt(settings.goodColor, "0x00AA55");
 	message[KEY_WARNING_COLOR] = colorToRgbInt(settings.warningColor, "0xFFAA00");
 	message[KEY_ALARM_COLOR] = colorToRgbInt(settings.alarmColor, "0xFF0000");
@@ -1283,7 +1358,8 @@ Pebble.addEventListener("showConfiguration", function (e) {
 		pollIntervalMinutes: settings.pollIntervalMinutes
 	};
 
-	Pebble.openURL(clay.generateUrl(claySettings));
+	clay.setSettings(claySettings);
+	Pebble.openURL(clay.generateUrl());
 });
 
 /**

@@ -25,6 +25,8 @@
 #define KEY_ALARM_COLOR   15
 #define KEY_POLL_INTERVAL 16
 #define KEY_QUICK_VIEW    17
+#define KEY_LOW_ALARM_THRESHOLD 18
+#define KEY_HIGH_ALARM_THRESHOLD 19
 
 // Trend arrow indices
 #define TREND_NONE        0
@@ -98,8 +100,10 @@ static int s_last_minutes_ago = -1;  // -1 = no data received yet
 static time_t s_last_data_time = 0;   // When we last received data from phone
 
 // Threshold settings (defaults, updated from phone)
-static int s_low_threshold = 70;
+static int s_low_threshold = 80;
 static int s_high_threshold = 180;
+static int s_low_alarm_threshold = 70;
+static int s_high_alarm_threshold = 250;
 static int s_poll_interval_minutes = 5;
 
 // Configurable chart point colors
@@ -748,28 +752,29 @@ static void parse_chart_history(const char *history) {
 }
 
 /**
- * Get color for a glucose value (color platforms only)
- * Returns red for low, orange for high, green for in-range
+ * Get the color for a glucose value.
+ *
+ * Warning thresholds define the green/yellow transition.
+ * Alarm thresholds define the yellow/red transition and are the same
+ * thresholds used by the configured glucose alarms.
  */
 #ifdef PBL_COLOR
 static GColor get_glucose_color(int value) {
-    // 2 mmol/L entsprechen ungefähr 36 mg/dL
-    const int warning_range = 36;
-
-    if (value >= s_low_threshold && value <= s_high_threshold) {
-        return s_good_color;
+    if (
+        value <= s_low_alarm_threshold ||
+        value >= s_high_alarm_threshold
+    ) {
+        return s_alarm_color;
     }
 
     if (
-        (value < s_low_threshold &&
-         value >= s_low_threshold - warning_range) ||
-        (value > s_high_threshold &&
-         value <= s_high_threshold + warning_range)
+        value < s_low_threshold ||
+        value > s_high_threshold
     ) {
         return s_warning_color;
     }
 
-    return s_alarm_color;
+    return s_good_color;
 }
 #endif
 
@@ -1845,6 +1850,22 @@ static void inbox_received_callback(DictionaryIterator *iterator, void *context)
     Tuple *high_threshold_tuple = dict_find(iterator, KEY_HIGH_THRESHOLD);
     if (high_threshold_tuple) {
         s_high_threshold = high_threshold_tuple->value->int32;
+        layer_mark_dirty(s_chart_layer);
+    }
+
+    Tuple *low_alarm_threshold_tuple =
+        dict_find(iterator, KEY_LOW_ALARM_THRESHOLD);
+    if (low_alarm_threshold_tuple) {
+        s_low_alarm_threshold =
+            low_alarm_threshold_tuple->value->int32;
+        layer_mark_dirty(s_chart_layer);
+    }
+
+    Tuple *high_alarm_threshold_tuple =
+        dict_find(iterator, KEY_HIGH_ALARM_THRESHOLD);
+    if (high_alarm_threshold_tuple) {
+        s_high_alarm_threshold =
+            high_alarm_threshold_tuple->value->int32;
         layer_mark_dirty(s_chart_layer);
     }
 
