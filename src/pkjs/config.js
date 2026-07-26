@@ -41,7 +41,7 @@ module.exports = [
 					{ label: "20 minutes", value: 20 },
 					{ label: "30 minutes", value: 30 }
 				],
-				description: "The displayed delta compares the current glucose value with the reading closest to this interval. Positive delta = up arrow, negative delta = down arrow, zero = horizontal arrow."
+				description: "The displayed delta is normalized to this interval. The arrow stays horizontal below 1 mg/dL per minute, points up at +1 mg/dL per minute or faster, and down at -1 mg/dL per minute or faster."
 			}
 		]
 	},

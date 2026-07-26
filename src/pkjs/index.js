@@ -976,37 +976,71 @@ function calculateDeltaForInterval(
 		}
 	}
 
-	var maxDistance = 3 * 60 * 1000;
+	if (!bestReading || !bestTimestamp) {
+		return null;
+	}
 
-	if (!bestReading || bestDistance > maxDistance) {
+	var actualMinutes =
+		(latestTimestamp - bestTimestamp) / 60000;
+
+	if (
+		!isFinite(actualMinutes) ||
+		actualMinutes <= 0 ||
+		actualMinutes > 60
+	) {
 		console.log(
-			"No reading close enough for " +
-				interval +
-				"-minute delta"
+			"Cannot calculate a reliable delta: comparison age=" +
+				actualMinutes +
+				" min"
 		);
 		return null;
 	}
 
+	// Normalize the observed rate to the selected delta interval.
+	// This keeps a 5-, 10- or 15-minute delta comparable even when
+	// LibreLinkUp's nearest history point is not exactly on that minute.
+	var observedDelta =
+		latest.Value - bestReading.Value;
+	var normalizedDelta =
+		(observedDelta / actualMinutes) * interval;
+
 	return {
-		delta: latest.Value - bestReading.Value,
-		actualMinutes:
-			(latestTimestamp - bestTimestamp) / 60000
+		delta: normalizedDelta,
+		actualMinutes: actualMinutes
 	};
 }
 
 /**
  * Derive the trend arrow from the same delta shown on the watch.
  */
-function trendFromDelta(delta) {
-	if (delta === null || delta === undefined) {
+function trendFromDelta(
+	delta,
+	intervalMinutes
+) {
+	if (
+		delta === null ||
+		delta === undefined
+	) {
 		return TREND_DIRECTIONS.None;
 	}
 
-	if (delta > 0) {
+	var interval =
+		parseInt(intervalMinutes, 10) || 5;
+
+	if (interval <= 0) {
+		return TREND_DIRECTIONS.None;
+	}
+
+	// The arrow uses the normalized delta and the selected interval.
+	// Less than 1 mg/dL per minute is treated as stable.
+	var rateMgdlPerMinute =
+		delta / interval;
+
+	if (rateMgdlPerMinute >= 1) {
 		return TREND_DIRECTIONS.SingleUp;
 	}
 
-	if (delta < 0) {
+	if (rateMgdlPerMinute <= -1) {
 		return TREND_DIRECTIONS.SingleDown;
 	}
 
@@ -1231,7 +1265,10 @@ function processReadings(readings, fromCache) {
 		deltaInfo ? deltaInfo.delta : null;
 	var deltaText =
 		deltaInfo ? formatDelta(delta) : "--";
-	var latestTrend = trendFromDelta(delta);
+	var latestTrend = trendFromDelta(
+		delta,
+		settings.deltaIntervalMinutes
+	);
 
 	if (deltaInfo) {
 		console.log(
